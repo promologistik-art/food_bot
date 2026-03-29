@@ -1,5 +1,6 @@
 import json
 import asyncio
+import httpx
 from typing import Dict, Any
 from openai import OpenAI
 from config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, FOOD_DB_PATH
@@ -10,9 +11,16 @@ class FoodSearch:
             self.food_db = json.load(f)
         print(f"Загружено продуктов: {len(self.food_db)}")
         
+        # Создаём HTTP клиент без прокси
+        http_client = httpx.Client(
+            timeout=60.0,
+            follow_redirects=True
+        )
+        
         self.client = OpenAI(
             api_key=OPENAI_API_KEY,
-            base_url=OPENAI_BASE_URL
+            base_url=OPENAI_BASE_URL,
+            http_client=http_client
         )
         
         self.food_list = []
