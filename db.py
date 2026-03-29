@@ -1,6 +1,6 @@
 import sqlite3
 from datetime import datetime, date
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from config import USER_DB_PATH
 
 class UserDB:
@@ -67,22 +67,35 @@ class UserDB:
         
         return user
     
-    def add_meal(self, user_id: int, product_data: Dict, quantity: float = 1.0):
-        """Добавляет приём пищи"""
+    def add_meal(self, user_id: int, product: Dict[str, Any]):
+        """
+        Добавляет приём пищи
+        Аргументы:
+            user_id: ID пользователя
+            product: словарь с данными продукта
+                {
+                    "name": "название продукта",
+                    "protein": float,
+                    "fat": float,
+                    "carbohydrates": float,
+                    "calories": float,
+                    "quantity": float (опционально, по умолчанию 1.0)
+                }
+        """
         cursor = self.conn.cursor()
+        
+        # Извлекаем данные с дефолтными значениями
+        product_name = product.get("name") or product.get("product_name") or product.get("found_name")
+        protein = product.get("protein", 0)
+        fat = product.get("fat", 0)
+        carbs = product.get("carbohydrates") or product.get("carbs", 0)
+        calories = product.get("calories", 0)
+        quantity = product.get("quantity", 1.0)
         
         cursor.execute('''
             INSERT INTO meals (user_id, product_name, protein, fat, carbohydrates, calories, quantity)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            user_id,
-            product_data["product_name"],
-            product_data["protein"],
-            product_data["fat"],
-            product_data["carbohydrates"],
-            product_data["calories"],
-            quantity
-        ))
+        ''', (user_id, product_name, protein, fat, carbs, calories, quantity))
         
         self.conn.commit()
         
@@ -98,19 +111,78 @@ class UserDB:
                 total_calories = total_calories + ?
         ''', (
             user_id, today,
-            product_data["protein"] * quantity,
-            product_data["fat"] * quantity,
-            product_data["carbohydrates"] * quantity,
-            product_data["calories"] * quantity,
-            product_data["protein"] * quantity,
-            product_data["fat"] * quantity,
-            product_data["carbohydrates"] * quantity,
-            product_data["calories"] * quantity
+            protein * quantity,
+            fat * quantity,
+            carbs * quantity,
+            calories * quantity,
+            protein * quantity,
+            fat * quantity,
+            carbs * quantity,
+            calories * quantity
         ))
         
         self.conn.commit()
         
         return cursor.lastrowid
+    
+    def add_meals_batch(self, user_id: int, products: List[Dict[str, Any]]):
+        """
+        Добавляет несколько приёмов пищи за раз (batch insert)
+        """
+        if not products:
+            return
+        
+        cursor = self.conn.cursor()
+        
+        # Подготавливаем данные для массовой вставки
+        meals_data = []
+        total_protein = 0
+        total_fat = 0
+        total_carbs = 0
+        total_calories = 0
+        
+        for product in products:
+            product_name = product.get("name") or product.get("product_name") or product.get("found_name")
+            protein = product.get("protein", 0)
+            fat = product.get("fat", 0)
+            carbs = product.get("carbohydrates") or product.get("carbs", 0)
+            calories = product.get("calories", 0)
+            quantity = product.get("quantity", 1.0)
+            
+            meals_data.append((
+                user_id, product_name, protein, fat, carbs, calories, quantity
+            ))
+            
+            total_protein += protein * quantity
+            total_fat += fat * quantity
+            total_carbs += carbs * quantity
+            total_calories += calories * quantity
+        
+        # Массовая вставка
+        cursor.executemany('''
+            INSERT INTO meals (user_id, product_name, protein, fat, carbohydrates, calories, quantity)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', meals_data)
+        
+        # Обновляем дневную статистику
+        today = date.today().isoformat()
+        cursor.execute('''
+            INSERT INTO daily_stats (user_id, date, total_protein, total_fat, total_carbs, total_calories)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, date) DO UPDATE SET
+                total_protein = total_protein + ?,
+                total_fat = total_fat + ?,
+                total_carbs = total_carbs + ?,
+                total_calories = total_calories + ?
+        ''', (
+            user_id, today,
+            total_protein, total_fat, total_carbs, total_calories,
+            total_protein, total_fat, total_carbs, total_calories
+        ))
+        
+        self.conn.commit()
+        
+        return len(meals_data)
     
     def get_today_stats(self, user_id: int) -> Dict:
         """Получает статистику за сегодня"""
@@ -163,7 +235,7 @@ class UserDB:
         ]
     
     def clear_today(self, user_id: int):
-        """Очищает статистику за сегодня (для тестирования)"""
+        """Очищает статистику за сегодня"""
         cursor = self.conn.cursor()
         today = date.today().isoformat()
         
