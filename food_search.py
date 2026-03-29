@@ -1,8 +1,7 @@
 import json
 import asyncio
-import httpx
+import aiohttp
 from typing import Dict, Any
-from openai import OpenAI
 from config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, FOOD_DB_PATH
 
 class FoodSearch:
@@ -10,18 +9,6 @@ class FoodSearch:
         with open(FOOD_DB_PATH, 'r', encoding='utf-8') as f:
             self.food_db = json.load(f)
         print(f"Загружено продуктов: {len(self.food_db)}")
-        
-        # Создаём HTTP клиент без прокси
-        http_client = httpx.Client(
-            timeout=60.0,
-            follow_redirects=True
-        )
-        
-        self.client = OpenAI(
-            api_key=OPENAI_API_KEY,
-            base_url=OPENAI_BASE_URL,
-            http_client=http_client
-        )
         
         self.food_list = []
         for name, nutrients in list(self.food_db.items())[:3000]:
@@ -41,7 +28,7 @@ class FoodSearch:
 
 Пользователь: "{message}"
 
-ПРАВИЛА УМНОГО ПОИСКА:
+ПРАВИЛА:
 1. "яичница 4 яйца" → "яйцо куриное" (1 шт = 50г)
 2. "кофе с 2 ложками сахара" → "кофе чёрный" + "сахар" (1 ложка = 10г)
 3. "бутерброд с авокадо" → "хлеб" (1 кусок = 30г) + "авокадо" (50г)
@@ -51,8 +38,6 @@ class FoodSearch:
 - 1 кусок хлеба = 30г
 - 1 ложка сахара = 10г
 - 1 порция кофе = 200г
-
-ФОРМУЛА: калории = (ккал_из_базы / 100) × вес_в_граммах
 
 Верни ТОЛЬКО JSON:
 {
@@ -76,40 +61,61 @@ class FoodSearch:
     }
 }"""
 
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": OPENAI_MODEL,
+            "messages": [
+                {"role": "system", "content": "Отвечаешь только JSON. Никакого текста вне JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.1,
+            "max_tokens": 2000
+        }
+        
         try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.client.chat.completions.create(
-                    model=OPENAI_MODEL,
-                    messages=[
-                        {"role": "system", "content": "Ты — умный помощник по учёту питания. Отвечаешь только JSON."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.1,
-                    max_tokens=2000
-                )
-            )
-            
-            content = response.choices[0].message.content
-            content = content.strip()
-            
-            if content.startswith("```json"):
-                content = content[7:]
-            if content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-            content = content.strip()
-            
-            parsed = json.loads(content)
-            return {"success": True, "data": parsed}
-            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{OPENAI_BASE_URL}/chat/completions",
+                    headers=headers,
+                    json=data,
+                    timeout=60
+                ) as response:
+                    if response.status != 200:
+                        text = await response.text()
+                        print(f"API Error {response.status}: {text}")
+                        return {
+                            "success": False,
+                            "data": {"response_text": "Ошибка API. Попробуйте позже."}
+                        }
+                    
+                    result = await response.json()
+                    content = result["choices"][0]["message"]["content"]
+                    content = content.strip()
+                    
+                    if content.startswith("```json"):
+                        content = content[7:]
+                    if content.startswith("```"):
+                        content = content[3:]
+                    if content.endswith("```"):
+                        content = content[:-3]
+                    content = content.strip()
+                    
+                    parsed = json.loads(content)
+                    return {"success": True, "data": parsed}
+                    
+        except asyncio.TimeoutError:
+            print("Timeout error")
+            return {
+                "success": False,
+                "data": {"response_text": "Сервер не отвечает. Попробуйте позже."}
+            }
         except Exception as e:
             print(f"Error: {e}")
             return {
                 "success": False,
-                "data": {
-                    "response_text": "Не удалось разобрать сообщение. Попробуйте написать проще."
-                }
+                "data": {"response_text": "Не удалось разобрать сообщение. Попробуйте написать проще."}
             }
