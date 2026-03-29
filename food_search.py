@@ -9,68 +9,41 @@ class FoodSearch:
         with open(FOOD_DB_PATH, 'r', encoding='utf-8') as f:
             self.food_db = json.load(f)
         print(f"Загружено продуктов: {len(self.food_db)}")
-        
-        self.food_list = []
-        for name, nutrients in list(self.food_db.items())[:3000]:
-            self.food_list.append({
-                "name": name,
-                "calories": nutrients["calories"],
-                "protein": nutrients["protein"],
-                "fat": nutrients["fat"],
-                "carbs": nutrients["carbohydrates"]
-            })
     
     async def parse_and_calculate(self, message: str) -> Dict[str, Any]:
-        prompt = f"""Ты — помощник по учёту питания. Твоя задача — разобрать сообщение пользователя и вернуть JSON с продуктами.
+        full_db_json = json.dumps(self.food_db, ensure_ascii=False, indent=2)
+        
+        prompt = f"""Ты — помощник по учёту питания.
 
-БАЗА ПРОДУКТОВ (КБЖУ на 100г):
-{json.dumps(self.food_list, ensure_ascii=False, indent=2)[:10000]}
+БАЗА ПРОДУКТОВ (КБЖУ на 100 грамм). ЭТО ЕДИНСТВЕННЫЙ ИСТОЧНИК ДАННЫХ:
+{full_db_json[:15000]}
 
 Пользователь: "{message}"
 
-ВАЖНЫЕ ПРАВИЛА:
-1. Если пользователь указал вес (например "200г", "150 грамм", "2 шт"), ты ОБЯЗАН использовать этот вес.
-2. "200г" = 200 грамм. Не игнорируй это!
-3. 1 шт яблока = 150г (если не указан вес)
-4. 1 шт яйца = 50г
-5. 1 ложка сахара = 10г
+ЖЁСТКИЕ ПРАВИЛА (НАРУШЕНИЯ ЗАПРЕЩЕНЫ):
+1. НЕ ВЫДУМЫВАЙ продукты. Бери ТОЛЬКО из базы выше.
+2. НЕ ВЫДУМЫВАЙ цифры. Бери ТОЛЬКО из базы выше.
+3. Если продукта НЕТ в базе — НЕ ПИШИ его.
+4. Если точного совпадения нет — выбери МАКСИМАЛЬНО БЛИЗКИЙ из базы.
 
-ФОРМУЛА РАСЧЁТА:
-калории = (калории_из_базы / 100) * вес_в_граммах
+РАСЧЁТ ВЕСА:
+- 1 яйцо = 50г
+- 1 кусок хлеба = 30г
+- 1 ложка сахара = 10г
+- 1 яблоко = 150г
+- 1 банан = 120г
 
-ПРИМЕР:
-Пользователь: "гречка 200г"
-Правильный ответ: {{"found_name": "гречневая каша", "weight_grams": 200, "calories": 202}}
-(101 ккал/100г, значит 200г = 202 ккал)
+ФОРМУЛА: калории = (калории_из_базы / 100) * вес_в_граммах
 
-Пользователь: "яичница 4 яйца"
-Правильный ответ: {{"found_name": "яйцо куриное", "quantity": 4, "weight_grams": 200, "calories": 314}}
+ТВОЙ ОТВЕТ — ТОЛЬКО ТЕКСТ. ПРИМЕР:
+🥚 Яйцо куриное — 4 шт (200г) — 314 ккал
+☕ Кофе чёрный — 1 порция — 2 ккал
+🍚 Гречневая каша — 200г — 202 ккал
 
-Верни ТОЛЬКО JSON. НИКАКОГО ТЕКСТА.
+━━━━━━━━━━━━━━━━━━━━━
+ИТОГО: 518 ккал | Белки: 32г | Жиры: 23г | Углеводы: 40г
 
-Формат ответа:
-{{
-    "products": [
-        {{
-            "found_name": "название из базы",
-            "quantity": 4,
-            "unit": "шт",
-            "weight_grams": 200,
-            "calories": 314,
-            "protein": 25.0,
-            "fat": 23.0,
-            "carbs": 1.4
-        }}
-    ],
-    "total": {{
-        "calories": 314,
-        "protein": 25.0,
-        "fat": 23.0,
-        "carbs": 1.4
-    }}
-}}
-
-Теперь разбери сообщение пользователя. ОБЯЗАТЕЛЬНО учитывай указанный вес!"""
+Верни ТОЛЬКО ОТВЕТ. БЕЗ JSON. БЕЗ ПОЯСНЕНИЙ."""
 
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -80,7 +53,7 @@ class FoodSearch:
         data = {
             "model": OPENAI_MODEL,
             "messages": [
-                {"role": "system", "content": "Ты — помощник по учёту питания. Отвечаешь только JSON. Обязательно используй вес, указанный пользователем."},
+                {"role": "system", "content": "Ты — помощник по учёту питания. ЗАПРЕЩЕНО выдумывать продукты и цифры. Используй ТОЛЬКО базу данных. Отвечай только текстом, без JSON."},
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.1,
@@ -93,28 +66,18 @@ class FoodSearch:
                     f"{OPENAI_BASE_URL}/chat/completions",
                     headers=headers,
                     json=data,
-                    timeout=60
+                    timeout=90
                 ) as response:
                     if response.status != 200:
                         text = await response.text()
                         print(f"API Error: {text}")
-                        return {"success": False, "data": {"response_text": "Ошибка API"}}
+                        return {"success": False, "error": "Ошибка API"}
                     
                     result = await response.json()
-                    content = result["choices"][0]["message"]["content"]
-                    content = content.strip()
+                    answer = result["choices"][0]["message"]["content"]
                     
-                    if content.startswith("```json"):
-                        content = content[7:]
-                    if content.startswith("```"):
-                        content = content[3:]
-                    if content.endswith("```"):
-                        content = content[:-3]
-                    content = content.strip()
-                    
-                    parsed = json.loads(content)
-                    return {"success": True, "data": parsed}
+                    return {"success": True, "answer": answer}
                     
         except Exception as e:
             print(f"Error: {e}")
-            return {"success": False, "data": {"response_text": "Ошибка"}}
+            return {"success": False, "error": str(e)}
