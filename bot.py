@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import re
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -14,6 +15,38 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 food_search = FoodSearch()
 user_db = UserDB()
+
+def extract_weight_from_user_input(user_text: str, product_name: str) -> float:
+    """Извлекает вес продукта из исходного сообщения пользователя"""
+    patterns = [
+        rf'{product_name}\s*(\d+(?:[.,]\d+)?)\s*г',
+        rf'{product_name}\s*(\d+(?:[.,]\d+)?)\s*грамм',
+        rf'(\d+(?:[.,]\d+)?)\s*г\s*{product_name}',
+        rf'(\d+(?:[.,]\d+)?)\s*грамм\s*{product_name}',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, user_text, re.IGNORECASE)
+        if match:
+            return float(match.group(1).replace(',', '.'))
+    
+    # Если не нашли вес, возвращаем None
+    return None
+
+def calculate_product(product_name: str, weight_grams: float, food_db: dict) -> dict:
+    """Рассчитывает КБЖУ для продукта по весу"""
+    if product_name in food_db:
+        data = food_db[product_name]
+        multiplier = weight_grams / 100
+        return {
+            "found_name": product_name,
+            "weight_grams": weight_grams,
+            "calories": data["calories"] * multiplier,
+            "protein": data["protein"] * multiplier,
+            "fat": data["fat"] * multiplier,
+            "carbs": data["carbohydrates"] * multiplier
+        }
+    return None
 
 def format_daily_stats(stats: dict) -> str:
     return f"""
@@ -99,27 +132,58 @@ async def handle_message(message: types.Message):
         return
     
     data = result["data"]
-    products = data.get("products", [])
+    products_from_ai = data.get("products", [])
     
-    if not products:
+    if not products_from_ai:
         await message.answer("Не удалось распознать продукты.")
         return
     
-    products_to_save = []
+    # ВАЖНО: пересчитываем продукты с правильным весом
+    corrected_products = []
     
-    for product in products:
-        if product.get("found_name"):
-            products_to_save.append(product)
+    for product in products_from_ai:
+        product_name = product.get("found_name")
+        if not product_name:
+            continue
+        
+        # Пытаемся извлечь вес из исходного сообщения
+        weight = extract_weight_from_user_input(user_text, product_name)
+        
+        if weight is None:
+            # Если вес не найден, используем то, что вернул AI
+            weight = product.get("weight_grams", 100)
+            # Но проверяем, не 1 ли грамм (ошибка AI)
+            if weight == 1:
+                weight = 100  # ставим разумное значение по умолчанию
+        
+        # Пересчитываем КБЖУ
+        corrected = calculate_product(product_name, weight, food_search.food_db)
+        
+        if corrected:
+            corrected["quantity"] = product.get("quantity", 1)
+            corrected["unit"] = product.get("unit", "г")
+            corrected_products.append(corrected)
     
-    if products_to_save:
-        user_db.add_meals_batch(user_id, products_to_save)
+    if not corrected_products:
+        await message.answer("Не удалось найти продукты в базе.")
+        return
     
+    # Сохраняем в базу
+    user_db.add_meals_batch(user_id, corrected_products)
+    
+    # Получаем статистику
     stats = user_db.get_today_stats(user_id)
     
+    # Формируем ответ
     response_lines = ["Добавлено:\n"]
     
-    for p in products_to_save:
-        response_lines.append(f"{p['found_name']} — {p['quantity']} {p['unit']} — {p['calories']:.0f} ккал")
+    for p in corrected_products:
+        unit = p.get("unit", "г")
+        qty = p.get("quantity", 1)
+        if unit == "г":
+            response_lines.append(f"{p['found_name']} — {p['weight_grams']:.0f} {unit} — {p['calories']:.0f} ккал")
+        else:
+            response_lines.append(f"{p['found_name']} — {qty} {unit} — {p['calories']:.0f} ккал")
     
     response_lines.append("\n" + format_daily_stats(stats))
     
