@@ -28,10 +28,10 @@ class FoodSearch:
 
 Пользователь: "{message}"
 
-ПРАВИЛА:
-1. "яичница 4 яйца" → "яйцо куриное" (1 шт = 50г)
-2. "кофе с 2 ложками сахара" → "кофе чёрный" + "сахар" (1 ложка = 10г)
-3. "бутерброд с авокадо" → "хлеб" (1 кусок = 30г) + "авокадо" (50г)
+ПРАВИЛА УМНОГО ПОИСКА:
+1. "яичница 4 яйца" -> "яйцо куриное" (1 шт = 50г)
+2. "кофе с 2 ложками сахара" -> "кофе чёрный" + "сахар" (1 ложка = 10г)
+3. "бутерброд с авокадо" -> "хлеб" (1 кусок = 30г) + "авокадо" (50г)
 
 СТАНДАРТНЫЙ ВЕС:
 - 1 яйцо = 50г
@@ -39,27 +39,29 @@ class FoodSearch:
 - 1 ложка сахара = 10г
 - 1 порция кофе = 200г
 
-Верни ТОЛЬКО JSON:
-{
+Верни ТОЛЬКО JSON. НИКАКОГО ТЕКСТА.
+
+ФОРМАТ ОТВЕТА:
+{{
     "products": [
-        {
+        {{
             "found_name": "название из базы",
-            "quantity": число,
-            "unit": "г/шт",
-            "weight_grams": число,
-            "calories": число,
-            "protein": число,
-            "fat": число,
-            "carbs": число
-        }
+            "quantity": 1,
+            "unit": "г",
+            "weight_grams": 100,
+            "calories": 100,
+            "protein": 10,
+            "fat": 5,
+            "carbs": 20
+        }}
     ],
-    "total": {
-        "calories": число,
-        "protein": число,
-        "fat": число,
-        "carbs": число
-    }
-}"""
+    "total": {{
+        "calories": 100,
+        "protein": 10,
+        "fat": 5,
+        "carbs": 20
+    }}
+}}"""
 
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -69,7 +71,7 @@ class FoodSearch:
         data = {
             "model": OPENAI_MODEL,
             "messages": [
-                {"role": "system", "content": "Отвечаешь только JSON. Никакого текста вне JSON."},
+                {"role": "system", "content": "Отвечаешь только JSON. Никакого текста."},
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.1,
@@ -86,11 +88,8 @@ class FoodSearch:
                 ) as response:
                     if response.status != 200:
                         text = await response.text()
-                        print(f"API Error {response.status}: {text}")
-                        return {
-                            "success": False,
-                            "data": {"response_text": "Ошибка API. Попробуйте позже."}
-                        }
+                        print(f"API Error: {text}")
+                        return {"success": False, "data": {"response_text": "Ошибка API"}}
                     
                     result = await response.json()
                     content = result["choices"][0]["message"]["content"]
@@ -107,15 +106,6 @@ class FoodSearch:
                     parsed = json.loads(content)
                     return {"success": True, "data": parsed}
                     
-        except asyncio.TimeoutError:
-            print("Timeout error")
-            return {
-                "success": False,
-                "data": {"response_text": "Сервер не отвечает. Попробуйте позже."}
-            }
         except Exception as e:
             print(f"Error: {e}")
-            return {
-                "success": False,
-                "data": {"response_text": "Не удалось разобрать сообщение. Попробуйте написать проще."}
-            }
+            return {"success": False, "data": {"response_text": "Ошибка"}}
