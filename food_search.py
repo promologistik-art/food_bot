@@ -1,95 +1,78 @@
 import json
 import aiohttp
-import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_API_URL, DEEPSEEK_MODEL,
-    FOOD_DB_PATH, MAX_CANDIDATES, SEARCH_TEMPERATURE, DEBUG
+    FOOD_DB_PATH, SEARCH_TEMPERATURE
 )
 
 class FoodSearch:
     def __init__(self):
-        print(f"🔍 Загрузка базы продуктов из: {FOOD_DB_PATH}")
-        
-        # Проверяем существование файла
-        if not os.path.exists(FOOD_DB_PATH):
-            raise FileNotFoundError(f"Файл базы не найден: {FOOD_DB_PATH}")
-        
-        # Загружаем JSON
-        try:
-            with open(FOOD_DB_PATH, 'r', encoding='utf-8') as f:
-                self.food_db = json.load(f)
-        except json.JSONDecodeError as e:
-            print(f"❌ Ошибка в JSON файле: {e}")
-            # Пробуем прочитать первые строки для диагностики
-            with open(FOOD_DB_PATH, 'r', encoding='utf-8') as f:
-                first_lines = [next(f) for _ in range(5)]
-            print(f"Первые строки файла:")
-            for line in first_lines:
-                print(f"  {line[:100]}")
-            raise e
-        
-        print(f"✅ База загружена! Всего продуктов: {len(self.food_db)}")
-        
-        # Выводим несколько примеров для проверки
-        sample = list(self.food_db.keys())[:5]
-        print(f"📝 Примеры: {sample}")
-        
-        self.food_names = list(self.food_db.keys())
+        # Загружаем базу продуктов
+        with open(FOOD_DB_PATH, 'r', encoding='utf-8') as f:
+            self.food_db = json.load(f)
+        print(f"✅ Загружено продуктов: {len(self.food_db)}")
     
-    def find_candidates(self, query: str, limit: int = MAX_CANDIDATES) -> List[Dict]:
-        """Находит кандидатов по ключевым словам"""
-        query_lower = query.lower()
-        candidates = []
+    async def parse_and_calculate(self, message: str) -> Dict[str, Any]:
+        """
+        Отправляет сообщение в DeepSeek и получает структурированный JSON.
+        DeepSeek возвращает:
+        - список продуктов с количеством
+        - итоговые КБЖУ
+        - красивый текст для ответа
+        """
         
-        for name, nutrients in self.food_db.items():
-            if query_lower in name.lower():
-                candidates.append({
-                    "name": name,
-                    **nutrients
-                })
-                if len(candidates) >= limit:
-                    break
+        # Передаём только названия продуктов для поиска (чтобы не перегружать токены)
+        product_names = list(self.food_db.keys())
+        # Берём первые 3000 для промпта (остальные DeepSeek будет искать по ключевым словам)
+        product_sample = "\n".join(product_names[:3000])
         
-        # Если мало кандидатов, ищем по словам
-        if len(candidates) < limit:
-            words = query_lower.split()
-            for name, nutrients in self.food_db.items():
-                if any(word in name.lower() for word in words):
-                    candidate = {"name": name, **nutrients}
-                    if candidate not in candidates:
-                        candidates.append(candidate)
-                        if len(candidates) >= limit:
-                            break
-        
-        return candidates[:limit]
-    
-    async def search_product(self, query: str) -> Optional[Dict]:
-        """Ищет продукт через API DeepSeek"""
-        candidates = self.find_candidates(query)
-        
-        if not candidates:
-            print(f"⚠️ Нет кандидатов для запроса: {query}")
-            return None
-        
-        print(f"🔍 Найдено {len(candidates)} кандидатов для '{query}'")
-        
-        prompt = f"""Ты — помощник для учёта питания. Пользователь хочет узнать КБЖУ продукта.
+        prompt = f"""Ты — помощник по учёту питания. У тебя есть база продуктов с КБЖУ.
 
-Пользователь сказал: "{query}"
+ВОТ НЕКОТОРЫЕ ПРОДУКТЫ ИЗ БАЗЫ (всего {len(product_names)}):
+{product_sample}
 
-Вот список возможных продуктов из базы данных:
-{json.dumps(candidates, ensure_ascii=False, indent=2)}
+Пользователь написал: "{message}"
 
-Найди наиболее подходящий продукт и верни JSON.
-Если ни один не подходит, установи "product_name": null.
+Твоя задача:
+1. Разобрать сообщение на отдельные продукты
+2. Для каждого продукта найти наиболее точное соответствие в базе
+3. Рассчитать КБЖУ для указанного количества
+4. Подсчитать итоги
 
-Ответь ТОЛЬКО JSON:
+Верни ТОЛЬКО JSON в указанном формате. НИКАКОГО ТЕКСТА вне JSON.
+
+Формат ответа:
 {{
-    "product_name": "точное название из базы или null",
-    "match_confidence": "high/medium/low",
-    "note": "пояснение при необходимости"
-}}"""
+    "products": [
+        {{
+            "found_name": "точное название из базы (если найдено)",
+            "user_input": "что написал пользователь",
+            "quantity": число,
+            "unit": "г/шт/порция/ложка",
+            "protein": число,
+            "fat": число,
+            "carbs": число,
+            "calories": число,
+            "confidence": "high/medium/low",
+            "note": "примечание, если есть"
+        }}
+    ],
+    "total": {{
+        "calories": число,
+        "protein": число,
+        "fat": число,
+        "carbs": число
+    }},
+    "response_text": "красивый текст для пользователя с эмодзи"
+}}
+
+Правила:
+- Если продукт не найден в базе, оставь found_name = null
+- Для сложных блюд (яичница, бутерброд) разбей на составляющие
+- Количество указывай в граммах для весовых продуктов, в штуках для штучных
+- В response_text сделай читаемый список продуктов и итоги
+"""
 
         headers = {
             "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
@@ -99,19 +82,20 @@ class FoodSearch:
         data = {
             "model": DEEPSEEK_MODEL,
             "messages": [
-                {"role": "system", "content": "Ты — точный помощник по питанию. Отвечаешь только JSON."},
+                {"role": "system", "content": "Ты — помощник по учёту питания. Отвечаешь ТОЛЬКО JSON."},
                 {"role": "user", "content": prompt}
             ],
             "temperature": SEARCH_TEMPERATURE,
-            "max_tokens": 300
+            "max_tokens": 2000
         }
         
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=30) as response:
+                async with session.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=45) as response:
                     if response.status != 200:
-                        print(f"⚠️ API вернул статус {response.status}")
-                        return self._fallback_search(query, candidates)
+                        error_text = await response.text()
+                        print(f"API Error {response.status}: {error_text}")
+                        return self._get_error_response(message)
                     
                     result = await response.json()
                     content = result["choices"][0]["message"]["content"]
@@ -126,38 +110,42 @@ class FoodSearch:
                         content = content[:-3]
                     content = content.strip()
                     
-                    product_data = json.loads(content)
+                    parsed = json.loads(content)
                     
-                    if product_data.get("product_name") and product_data["product_name"] in self.food_db:
-                        # Получаем полные данные из базы
-                        full_data = self.food_db[product_data["product_name"]]
-                        return {
-                            "product_name": product_data["product_name"],
-                            "protein": full_data["protein"],
-                            "fat": full_data["fat"],
-                            "carbohydrates": full_data["carbohydrates"],
-                            "calories": full_data["calories"],
-                            "match_confidence": product_data.get("match_confidence", "medium"),
-                            "note": product_data.get("note", "")
-                        }
-                    else:
-                        return self._fallback_search(query, candidates)
-                        
+                    # Дополняем найденные продукты полными данными из базы
+                    for product in parsed.get("products", []):
+                        if product.get("found_name") and product["found_name"] in self.food_db:
+                            db_data = self.food_db[product["found_name"]]
+                            # Если DeepSeek не вернул КБЖУ, берём из базы
+                            if product.get("calories", 0) == 0:
+                                product["protein"] = db_data["protein"]
+                                product["fat"] = db_data["fat"]
+                                product["carbs"] = db_data["carbohydrates"]
+                                product["calories"] = db_data["calories"]
+                    
+                    return {
+                        "success": True,
+                        "data": parsed
+                    }
+                    
         except Exception as e:
-            print(f"⚠️ Ошибка API: {e}")
-            return self._fallback_search(query, candidates)
+            print(f"Parse error: {e}")
+            return self._get_error_response(message)
     
-    def _fallback_search(self, query: str, candidates: List[Dict]) -> Optional[Dict]:
-        """Резервный поиск"""
-        if not candidates:
-            return None
-        
+    def _get_error_response(self, message: str) -> Dict:
+        """Возвращает ответ при ошибке"""
         return {
-            "product_name": candidates[0]["name"],
-            "protein": candidates[0]["protein"],
-            "fat": candidates[0]["fat"],
-            "carbohydrates": candidates[0]["carbohydrates"],
-            "calories": candidates[0]["calories"],
-            "match_confidence": "low",
-            "note": "Автоматический выбор"
+            "success": False,
+            "data": {
+                "response_text": f"""😕 *Не удалось обработать сообщение*
+
+Ваше сообщение: "{message}"
+
+Попробуйте написать проще, например:
+• `яблоко 150г`
+• `гречка 200г, курица 150`
+• `яичница 4 яйца, кофе 2 ложки сахара`
+
+Или просто напишите название продукта."""
+            }
         }
