@@ -1,13 +1,14 @@
 import logging
 import asyncio
 import re
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, ADMIN_ID, ADMIN_CONTACT, TRIAL_DAYS, SUBSCRIPTION_PRICE
 from food_search import FoodSearch
 from db import UserDB
 
@@ -29,37 +30,102 @@ def format_daily_stats(stats: dict) -> str:
 Углеводы: {stats['carbs']:.1f} г
 """
 
+def format_subscription_status(subscription: dict) -> str:
+    """Форматирует статус подписки"""
+    days = subscription.get("days_left", 0)
+    if days > 0:
+        return f"✅ Активна. Осталось дней: {days}"
+    else:
+        return f"❌ Истекла. Для продления свяжитесь с админом: {ADMIN_CONTACT}"
+
 async def set_bot_commands():
     commands = [
         BotCommand(command="start", description="Начать работу"),
         BotCommand(command="stats", description="Статистика за сегодня"),
         BotCommand(command="history", description="История записей"),
         BotCommand(command="clear", description="Очистить статистику"),
+        BotCommand(command="subscription", description="Статус подписки"),
         BotCommand(command="help", description="Помощь"),
     ]
     await bot.set_my_commands(commands)
 
+async def notify_admin(user_id: int, username: str, first_name: str):
+    """Отправляет уведомление админу о новом пользователе"""
+    if ADMIN_ID:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🆕 Новый пользователь!\n\n"
+            f"ID: {user_id}\n"
+            f"Имя: {first_name}\n"
+            f"Username: @{username}" if username else "Username: нет"
+        )
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    user_db.get_or_create_user(
+    user, is_new = user_db.get_or_create_user(
         message.from_user.id,
         message.from_user.username,
         message.from_user.first_name
     )
-    await message.answer("FoodTracker Bot\n\nПросто напишите, что съели — я всё посчитаю!\n\nПримеры:\nяичница 4 яйца, кофе 2 ложки сахара\nгречка 200г, куриная грудка 150\nборщ 400г\n\nКоманды:\n/stats — статистика\n/history — история\n/clear — очистить")
+    
+    if is_new:
+        await notify_admin(message.from_user.id, message.from_user.username, message.from_user.first_name)
+    
+    subscription = user_db.get_subscription_status(message.from_user.id)
+    
+    await message.answer(
+        f"FoodTracker Bot\n\n"
+        f"Просто напишите, что съели — я всё посчитаю!\n\n"
+        f"📊 Статус подписки: {format_subscription_status(subscription)}\n\n"
+        f"Примеры:\n"
+        f"яичница 4 яйца, кофе 2 ложки сахара\n"
+        f"гречка 200г, куриная грудка 150\n"
+        f"борщ 400г\n\n"
+        f"Команды:\n"
+        f"/stats — статистика\n"
+        f"/history — история\n"
+        f"/clear — очистить\n"
+        f"/subscription — статус подписки"
+    )
+
+@dp.message(Command("subscription"))
+async def cmd_subscription(message: types.Message):
+    subscription = user_db.get_subscription_status(message.from_user.id)
+    await message.answer(f"📊 Статус подписки: {format_subscription_status(subscription)}")
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
-    await message.answer("Помощь:\n\n/stats — статистика за сегодня\n/history — история записей\n/clear — очистить статистику\n\nПросто напишите, что съели, например:\nборщ 400г\nяичница 4 яйца\nгречка 200г, курица 150")
+    await message.answer(
+        "Помощь:\n\n"
+        "/stats — статистика за сегодня\n"
+        "/history — история записей\n"
+        "/clear — очистить статистику\n"
+        "/subscription — статус подписки\n\n"
+        "Просто напишите, что съели, например:\n"
+        "борщ 400г\n"
+        "яичница 4 яйца\n"
+        "гречка 200г, курица 150\n\n"
+        f"Связаться с админом: {ADMIN_CONTACT}"
+    )
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
+    subscription = user_db.get_subscription_status(message.from_user.id)
+    if subscription["days_left"] <= 0 and not subscription["is_active"]:
+        await message.answer(f"❌ Ваш тестовый период истёк.\n\nДля продолжения использования оформите подписку: {ADMIN_CONTACT}")
+        return
+    
     stats = user_db.get_today_stats(message.from_user.id)
     await message.answer(format_daily_stats(stats))
 
 @dp.message(Command("history"))
 async def cmd_history(message: types.Message):
+    subscription = user_db.get_subscription_status(message.from_user.id)
+    if subscription["days_left"] <= 0 and not subscription["is_active"]:
+        await message.answer(f"❌ Ваш тестовый период истёк.\n\nДля продолжения использования оформите подписку: {ADMIN_CONTACT}")
+        return
+    
     meals = user_db.get_recent_meals(message.from_user.id, 10)
     if not meals:
         await message.answer("История пуста.")
@@ -86,6 +152,50 @@ async def handle_clear_callback(callback: types.CallbackQuery):
     else:
         await callback.message.edit_text("Отменено.")
     await callback.answer()
+
+# Админские команды
+@dp.message(Command("admin_users"))
+async def cmd_admin_users(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ Нет доступа")
+        return
+    
+    users = user_db.get_all_users()
+    if not users:
+        await message.answer("Нет пользователей")
+        return
+    
+    text = "📋 *Список пользователей:*\n\n"
+    for u in users:
+        text += f"ID: {u['user_id']}\n"
+        text += f"Имя: {u['first_name']}\n"
+        if u['username']:
+            text += f"Username: @{u['username']}\n"
+        text += f"Регистрация: {u['created_at'][:10]}\n"
+        text += f"Триал до: {u['trial_end']}\n"
+        text += f"Оплачено до: {u['paid_until'] or 'нет'}\n"
+        text += "─" * 20 + "\n"
+    
+    await message.answer(text, parse_mode="Markdown")
+
+@dp.message(Command("admin_activate"))
+async def cmd_admin_activate(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ Нет доступа")
+        return
+    
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("Использование: /admin_activate user_id [days]")
+        return
+    
+    try:
+        user_id = int(parts[1])
+        days = int(parts[2]) if len(parts) > 2 else 30
+        user_db.activate_subscription(user_id, days)
+        await message.answer(f"✅ Подписка активирована для пользователя {user_id} на {days} дней")
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
 
 def extract_product_data(product: dict) -> dict:
     return {
@@ -209,6 +319,16 @@ async def handle_correction(message: types.Message, state: FSMContext):
 @dp.message()
 async def handle_message(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    
+    # Проверяем подписку
+    subscription = user_db.get_subscription_status(user_id)
+    if subscription["days_left"] <= 0 and not subscription["is_active"]:
+        await message.answer(
+            f"❌ Ваш тестовый период истёк.\n\n"
+            f"Для продолжения использования оформите подписку за {SUBSCRIPTION_PRICE}₽/мес.\n"
+            f"Свяжитесь с админом: {ADMIN_CONTACT}"
+        )
+        return
     
     current_state = await state.get_state()
     if current_state == WaitingState.waiting_for_correction.state:
