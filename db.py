@@ -60,12 +60,12 @@ class UserDB:
         """Добавляет один приём пищи"""
         cursor = self.conn.cursor()
         
-        product_name = product.get("found_name", "Unknown")
+        product_name = product.get("name", "Unknown")
         protein = product.get("protein", 0)
         fat = product.get("fat", 0)
         carbs = product.get("carbs", 0)
         calories = product.get("calories", 0)
-        quantity = product.get("weight_grams", product.get("quantity", 100)) / 100 if product.get("unit") == "г" else product.get("quantity", 1)
+        quantity = product.get("weight_grams", 100) / 100  # переводим граммы в сотни грамм
         
         cursor.execute('''
             INSERT INTO meals (user_id, product_name, protein, fat, carbohydrates, calories, quantity)
