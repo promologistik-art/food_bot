@@ -1,7 +1,8 @@
 import json
 import asyncio
 import aiohttp
-from typing import Dict, Any
+import re
+from typing import Dict, Any, List
 from config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, FOOD_DB_PATH
 
 class FoodSearch:
@@ -11,39 +12,60 @@ class FoodSearch:
         print(f"Загружено продуктов: {len(self.food_db)}")
     
     async def parse_and_calculate(self, message: str) -> Dict[str, Any]:
+        """DeepSeek возвращает JSON с продуктами для сохранения и текст для пользователя"""
+        
         full_db_json = json.dumps(self.food_db, ensure_ascii=False, indent=2)
         
         prompt = f"""Ты — помощник по учёту питания.
 
-БАЗА ПРОДУКТОВ (КБЖУ на 100 грамм). ЭТО ЕДИНСТВЕННЫЙ ИСТОЧНИК ДАННЫХ:
+БАЗА ПРОДУКТОВ (КБЖУ на 100 грамм). ИСПОЛЬЗУЙ ТОЛЬКО ЭТИ ДАННЫЕ:
 {full_db_json[:15000]}
 
 Пользователь: "{message}"
 
-ЖЁСТКИЕ ПРАВИЛА (НАРУШЕНИЯ ЗАПРЕЩЕНЫ):
-1. НЕ ВЫДУМЫВАЙ продукты. Бери ТОЛЬКО из базы выше.
-2. НЕ ВЫДУМЫВАЙ цифры. Бери ТОЛЬКО из базы выше.
-3. Если продукта НЕТ в базе — НЕ ПИШИ его.
-4. Если точного совпадения нет — выбери МАКСИМАЛЬНО БЛИЗКИЙ из базы.
+ПРАВИЛА:
+1. Найди каждый продукт в базе. Если точного совпадения нет — выбери максимально похожий.
+2. Рассчитай вес:
+   - 1 яйцо = 50г
+   - 1 кусок хлеба = 30г
+   - 1 ложка сахара = 10г
+   - 1 яблоко = 150г
+   - 1 банан = 120г
+   - Если пользователь указал вес (200г, 150г) — используй его.
+3. Рассчитай КБЖУ: (значение_из_базы / 100) * вес_в_граммах
 
-РАСЧЁТ ВЕСА:
-- 1 яйцо = 50г
-- 1 кусок хлеба = 30г
-- 1 ложка сахара = 10г
-- 1 яблоко = 150г
-- 1 банан = 120г
+Верни ТОЛЬКО JSON в этом формате:
+{{
+    "products": [
+        {{
+            "found_name": "название из базы",
+            "quantity": число,
+            "unit": "шт/г",
+            "weight_grams": число,
+            "calories": число,
+            "protein": число,
+            "fat": число,
+            "carbs": число
+        }}
+    ],
+    "total": {{
+        "calories": число,
+        "protein": число,
+        "fat": число,
+        "carbs": число
+    }},
+    "user_text": "КРАТКИЙ текст для пользователя с итогами (без лишней воды)"
+}}
 
-ФОРМУЛА: калории = (калории_из_базы / 100) * вес_в_граммах
-
-ТВОЙ ОТВЕТ — ТОЛЬКО ТЕКСТ. ПРИМЕР:
+Пример user_text:
 🥚 Яйцо куриное — 4 шт (200г) — 314 ккал
 ☕ Кофе чёрный — 1 порция — 2 ккал
+🍬 Сахар — 2 ч.л. (20г) — 80 ккал
 🍚 Гречневая каша — 200г — 202 ккал
-
+🍗 Куриная грудка — 150г — 170 ккал
+🍎 Яблоко — 2 шт (300г) — 156 ккал
 ━━━━━━━━━━━━━━━━━━━━━
-ИТОГО: 518 ккал | Белки: 32г | Жиры: 23г | Углеводы: 40г
-
-Верни ТОЛЬКО ОТВЕТ. БЕЗ JSON. БЕЗ ПОЯСНЕНИЙ."""
+ИТОГО: 924 ккал | Белки: 65г | Жиры: 28г | Углеводы: 110г"""
 
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -53,11 +75,11 @@ class FoodSearch:
         data = {
             "model": OPENAI_MODEL,
             "messages": [
-                {"role": "system", "content": "Ты — помощник по учёту питания. ЗАПРЕЩЕНО выдумывать продукты и цифры. Используй ТОЛЬКО базу данных. Отвечай только текстом, без JSON."},
+                {"role": "system", "content": "Ты — помощник по учёту питания. Отвечаешь ТОЛЬКО JSON. Никакого текста вне JSON."},
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.1,
-            "max_tokens": 2000
+            "max_tokens": 3000
         }
         
         try:
@@ -74,9 +96,19 @@ class FoodSearch:
                         return {"success": False, "error": "Ошибка API"}
                     
                     result = await response.json()
-                    answer = result["choices"][0]["message"]["content"]
+                    content = result["choices"][0]["message"]["content"]
+                    content = content.strip()
                     
-                    return {"success": True, "answer": answer}
+                    if content.startswith("```json"):
+                        content = content[7:]
+                    if content.startswith("```"):
+                        content = content[3:]
+                    if content.endswith("```"):
+                        content = content[:-3]
+                    content = content.strip()
+                    
+                    parsed = json.loads(content)
+                    return {"success": True, "data": parsed}
                     
         except Exception as e:
             print(f"Error: {e}")

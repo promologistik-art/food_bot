@@ -10,7 +10,6 @@ class UserDB:
     
     def create_tables(self):
         cursor = self.conn.cursor()
-        
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -19,7 +18,6 @@ class UserDB:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS meals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,7 +31,6 @@ class UserDB:
                 meal_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS daily_stats (
                 user_id INTEGER,
@@ -45,54 +42,37 @@ class UserDB:
                 PRIMARY KEY (user_id, date)
             )
         ''')
-        
         self.conn.commit()
     
     def get_or_create_user(self, user_id: int, username: str = None, first_name: str = None):
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         user = cursor.fetchone()
-        
         if not user:
             cursor.execute(
                 "INSERT INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
                 (user_id, username, first_name)
             )
             self.conn.commit()
-        
         return user
     
-    def add_meals_batch(self, user_id: int, products: List[Dict[str, Any]]):
-        if not products:
-            return
-        
+    def add_meal(self, user_id: int, product: Dict[str, Any]):
+        """Добавляет один приём пищи"""
         cursor = self.conn.cursor()
         
-        meals_data = []
-        total_protein = 0
-        total_fat = 0
-        total_carbs = 0
-        total_calories = 0
+        product_name = product.get("found_name", "Unknown")
+        protein = product.get("protein", 0)
+        fat = product.get("fat", 0)
+        carbs = product.get("carbs", 0)
+        calories = product.get("calories", 0)
+        quantity = product.get("weight_grams", product.get("quantity", 100)) / 100 if product.get("unit") == "г" else product.get("quantity", 1)
         
-        for product in products:
-            product_name = product.get("found_name", "Unknown")
-            protein = product.get("protein", 0)
-            fat = product.get("fat", 0)
-            carbs = product.get("carbs", 0)
-            calories = product.get("calories", 0)
-            quantity = product.get("quantity", 1.0)
-            
-            meals_data.append((user_id, product_name, protein, fat, carbs, calories, quantity))
-            
-            total_protein += protein * quantity
-            total_fat += fat * quantity
-            total_carbs += carbs * quantity
-            total_calories += calories * quantity
-        
-        cursor.executemany('''
+        cursor.execute('''
             INSERT INTO meals (user_id, product_name, protein, fat, carbohydrates, calories, quantity)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', meals_data)
+        ''', (user_id, product_name, protein, fat, carbs, calories, quantity))
+        
+        self.conn.commit()
         
         today = date.today().isoformat()
         cursor.execute('''
@@ -105,36 +85,26 @@ class UserDB:
                 total_calories = total_calories + ?
         ''', (
             user_id, today,
-            total_protein, total_fat, total_carbs, total_calories,
-            total_protein, total_fat, total_carbs, total_calories
+            protein * quantity, fat * quantity, carbs * quantity, calories * quantity,
+            protein * quantity, fat * quantity, carbs * quantity, calories * quantity
         ))
-        
         self.conn.commit()
     
     def get_today_stats(self, user_id: int) -> dict:
         cursor = self.conn.cursor()
         today = date.today().isoformat()
-        
         cursor.execute('''
             SELECT total_protein, total_fat, total_carbs, total_calories
             FROM daily_stats
             WHERE user_id = ? AND date = ?
         ''', (user_id, today))
-        
         row = cursor.fetchone()
-        
         if row:
-            return {
-                "protein": row[0] or 0,
-                "fat": row[1] or 0,
-                "carbs": row[2] or 0,
-                "calories": row[3] or 0
-            }
+            return {"protein": row[0] or 0, "fat": row[1] or 0, "carbs": row[2] or 0, "calories": row[3] or 0}
         return {"protein": 0, "fat": 0, "carbs": 0, "calories": 0}
     
     def get_recent_meals(self, user_id: int, limit: int = 10) -> List[dict]:
         cursor = self.conn.cursor()
-        
         cursor.execute('''
             SELECT product_name, protein, fat, carbohydrates, calories, quantity, meal_time
             FROM meals
@@ -142,26 +112,12 @@ class UserDB:
             ORDER BY meal_time DESC
             LIMIT ?
         ''', (user_id, limit))
-        
         rows = cursor.fetchall()
-        
-        return [
-            {
-                "product_name": row[0],
-                "protein": row[1],
-                "fat": row[2],
-                "carbohydrates": row[3],
-                "calories": row[4],
-                "quantity": row[5],
-                "meal_time": row[6]
-            }
-            for row in rows
-        ]
+        return [{"product_name": row[0], "protein": row[1], "fat": row[2], "carbohydrates": row[3], "calories": row[4], "quantity": row[5], "meal_time": row[6]} for row in rows]
     
     def clear_today(self, user_id: int):
         cursor = self.conn.cursor()
         today = date.today().isoformat()
-        
         cursor.execute("DELETE FROM meals WHERE user_id = ? AND DATE(meal_time) = ?", (user_id, today))
         cursor.execute("DELETE FROM daily_stats WHERE user_id = ? AND date = ?", (user_id, today))
         self.conn.commit()
