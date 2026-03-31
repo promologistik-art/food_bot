@@ -30,7 +30,7 @@ async def cmd_start(message: types.Message):
         message.from_user.username,
         message.from_user.first_name
     )
-    await message.answer("FoodTracker Bot\n\nПросто напишите, что съели — я всё посчитаю!\n\nПримеры:\nяичница 4 яйца, кофе 2 ложки сахара\ngречка 200г, куриная грудка 150\nборщ 400г\n\nКоманды:\n/stats — статистика\n/history — история\n/clear — очистить")
+    await message.answer("FoodTracker Bot\n\nПросто напишите, что съели — я всё посчитаю!\n\nПримеры:\nяичница 4 яйца, кофе 2 ложки сахара\nгречка 200г, куриная грудка 150\nборщ 400г\n\nКоманды:\n/stats — статистика\n/history — история\n/clear — очистить")
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
@@ -88,7 +88,8 @@ async def handle_message(message: types.Message):
     await waiting_msg.delete()
     
     if not result["success"]:
-        await message.answer(f"Не удалось обработать.\n\n{result.get('error', 'Попробуйте написать по-другому, например:\nборщ 400г\nяичница 4 яйца\nстакан кефира')}")
+        error_text = result.get('error', '')
+        await message.answer(f"Не удалось обработать.\n\n{error_text}\n\nПопробуйте написать по-другому, например:\nборщ 400г\nяичница 4 яйца\nстакан кефира")
         return
     
     data = result["data"]
