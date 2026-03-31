@@ -7,16 +7,16 @@ from config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
 
 class FoodSearch:
     async def parse_and_calculate(self, message: str) -> Dict[str, Any]:
-        # Определяем время суток для эмодзи
+        # Определяем время суток для одного эмодзи
         hour = datetime.now().hour
         if 6 <= hour < 12:
-            time_emoji = "🌅"  # утро
+            time_emoji = "🌅"
         elif 12 <= hour < 18:
-            time_emoji = "☀️"  # день
+            time_emoji = "☀️"
         elif 18 <= hour < 24:
-            time_emoji = "🌙"  # вечер
+            time_emoji = "🌙"
         else:
-            time_emoji = "🌃"  # ночь
+            time_emoji = "🌃"
 
         prompt = f"""Ты — профессиональный диетолог-нутрициолог.
 
@@ -25,7 +25,7 @@ class FoodSearch:
 Твоя задача:
 1. Разобрать сообщение на отдельные продукты
 2. Для каждого продукта рассчитать КБЖУ на указанный вес
-3. Учитывай стандартный вес: 1 яйцо=50г, 1 ложка сахара=10г, 1 яблоко=150г, 1 банан=120г, 1 кусок хлеба=30г
+3. Учитывай стандартный вес: 1 яйцо=50г, 1 ложка сахара=10г, 1 яблоко=150г, 1 банан=120г, 1 кусок хлеба=30г, 1 стакан кефира=250г, 1 порция борща=400г
 4. Если пользователь указал вес (200г, 150г) — используй его
 
 Верни ТОЛЬКО JSON в этом формате:
@@ -58,7 +58,7 @@ class FoodSearch:
         data = {
             "model": OPENAI_MODEL,
             "messages": [
-                {"role": "system", "content": "Ты — диетолог. Отвечаешь ТОЛЬКО JSON. Не выдумывай цифры. Используй стандартные значения веса."},
+                {"role": "system", "content": "Ты — диетолог. Отвечаешь ТОЛЬКО JSON. Не выдумывай цифры."},
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.1,
@@ -92,33 +92,29 @@ class FoodSearch:
                     
                     parsed = json.loads(content)
                     
-                    # Формируем красивый ответ с таблицей
                     products = parsed.get("products", [])
                     total = parsed.get("total", {})
                     
-                    # Заголовок таблицы
-                    table = f"{time_emoji} *Ваш приём пищи:*\n\n"
-                    table += "┌──────────────────┬────────┬──────┬──────┬──────┬──────┐\n"
-                    table += "│ Продукт          │ Вес    │ К    │ Б    │ Ж    │ У    │\n"
-                    table += "├──────────────────┼────────┼──────┼──────┼──────┼──────┤\n"
+                    # Формируем простой текст без таблицы
+                    lines = [f"{time_emoji} Ваш приём пищи:"]
+                    lines.append("")
                     
                     for p in products:
-                        name = p.get("name", "")[:16].ljust(16)
-                        weight = f"{p.get('weight_grams', 0):.0f}г".ljust(6)
-                        cal = f"{p.get('calories', 0):.0f}".ljust(4)
-                        prot = f"{p.get('protein', 0):.1f}".ljust(4)
-                        fat = f"{p.get('fat', 0):.1f}".ljust(4)
-                        carbs = f"{p.get('carbs', 0):.1f}".ljust(4)
-                        table += f"│ {name} │ {weight} │ {cal} │ {prot} │ {fat} │ {carbs} │\n"
+                        name = p.get("name", "")
+                        weight = p.get("weight_grams", 0)
+                        cal = p.get("calories", 0)
+                        prot = p.get("protein", 0)
+                        fat = p.get("fat", 0)
+                        carbs = p.get("carbs", 0)
+                        lines.append(f"{name} - {weight}г, К {cal:.0f}, Б {prot:.1f}, Ж {fat:.1f}, У {carbs:.1f}")
                     
-                    table += "├──────────────────┼────────┼──────┼──────┼──────┼──────┤\n"
-                    table += f"│ ИТОГО            │        │ {total.get('calories', 0):.0f} │ {total.get('protein', 0):.1f} │ {total.get('fat', 0):.1f} │ {total.get('carbs', 0):.1f} │\n"
-                    table += "└──────────────────┴────────┴──────┴──────┴──────┴──────┘"
+                    lines.append("")
+                    lines.append(f"ИТОГО: {total.get('calories', 0):.0f} ккал | Б: {total.get('protein', 0):.1f}г | Ж: {total.get('fat', 0):.1f}г | У: {total.get('carbs', 0):.1f}г")
                     
                     return {
                         "success": True,
                         "data": parsed,
-                        "user_text": table
+                        "user_text": "\n".join(lines)
                     }
                     
         except Exception as e:
