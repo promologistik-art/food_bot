@@ -1,8 +1,11 @@
 import logging
 import asyncio
+import re
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 from config import BOT_TOKEN
 from food_search import FoodSearch
@@ -14,6 +17,10 @@ dp = Dispatcher()
 food_search = FoodSearch()
 user_db = UserDB()
 
+# Состояния
+class WaitingState(StatesGroup):
+    waiting_for_correction = State()
+
 def format_daily_stats(stats: dict) -> str:
     return f"""
 Статистика за сегодня:
@@ -24,13 +31,14 @@ def format_daily_stats(stats: dict) -> str:
 """
 
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
     user_db.get_or_create_user(
         message.from_user.id,
         message.from_user.username,
         message.from_user.first_name
     )
-    await message.answer("FoodTracker Bot\n\nПросто напишите, что съели — я всё посчитаю!\n\nПримеры:\nяичница 4 яйца, кофе 2 ложки сахара\nгречка 200г, куриная грудка 150\nборщ 400г\n\nКоманды:\n/stats — статистика\n/history — история\n/clear — очистить")
+    await message.answer("FoodTracker Bot\n\nПросто напишите, что съели — я всё посчитаю!\n\nПримеры:\nяичница 4 яйца, кофе 2 ложки сахара\ngречка 200г, куриная грудка 150\nборщ 400г\n\nКоманды:\n/stats — статистика\n/history — история\n/clear — очистить")
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
@@ -76,9 +84,143 @@ def extract_product_data(product: dict) -> dict:
         "carbs": product.get("carbs", 0)
     }
 
+def is_affirmative(text: str) -> bool:
+    """Проверяет, является ли ответ утвердительным"""
+    text = text.lower().strip()
+    affirmative = ["да", "yes", "+", "ок", "окей", "хорошо", "верно", "ага", "дада", "yes yes"]
+    return any(word in text for word in affirmative)
+
+def is_negative(text: str) -> bool:
+    """Проверяет, является ли ответ отрицательным"""
+    text = text.lower().strip()
+    negative = ["нет", "no", "-", "не", "неверно", "не правильно", "не так"]
+    return any(word in text for word in negative)
+
+def is_correction(text: str) -> bool:
+    """Проверяет, содержит ли сообщение корректировку (цифры + граммы/продукты)"""
+    has_numbers = bool(re.search(r'\d+', text))
+    has_units = bool(re.search(r'г|гр|грамм|шт|штук|ложк|стакан|чашка', text.lower()))
+    return has_numbers or has_units
+
+def is_delete_command(text: str) -> bool:
+    """Проверяет, является ли сообщение командой удаления"""
+    text = text.lower().strip()
+    delete_words = ["удали", "убрать", "удалить", "убри", "убери", "delete", "remove"]
+    return any(word in text for word in delete_words)
+
+@dp.message(WaitingState.waiting_for_correction)
+async def handle_correction(message: types.Message, state: FSMContext):
+    """Обрабатывает корректировку от пользователя"""
+    user_text = message.text.strip().lower()
+    data = await state.get_data()
+    original_message = data.get("original_message", "")
+    original_products = data.get("original_products", [])
+    
+    # Если пользователь сказал "да" или подтверждение
+    if is_affirmative(user_text):
+        # Сохраняем исходные продукты
+        for p in original_products:
+            product_data = extract_product_data(p)
+            user_db.add_meal(message.from_user.id, product_data)
+        
+        stats = user_db.get_today_stats(message.from_user.id)
+        await message.answer(f"Сохранено!\n\n{format_daily_stats(stats)}")
+        await state.clear()
+        return
+    
+    # Если пользователь сказал "нет" без конкретики
+    if is_negative(user_text) and not is_correction(user_text):
+        await message.answer("Напишите правильные данные, например:\nборщ 300г\nкефир 200г\nили\nудали яйца")
+        return
+    
+    # Если команда удаления
+    if is_delete_command(user_text):
+        # Ищем что удалить
+        words_to_delete = re.findall(r'[\w]+', user_text.replace("удали", "").replace("убрать", "").replace("удалить", ""))
+        if words_to_delete:
+            to_delete = words_to_delete[0]
+            # Фильтруем продукты
+            new_products = []
+            for p in original_products:
+                if to_delete not in p.get("name", "").lower():
+                    new_products.append(p)
+            
+            if len(new_products) == len(original_products):
+                await message.answer(f"Не найден продукт '{to_delete}' для удаления.")
+                return
+            
+            # Пересчитываем с новыми продуктами
+            total = {"calories": 0, "protein": 0, "fat": 0, "carbs": 0}
+            for p in new_products:
+                total["calories"] += p.get("calories", 0)
+                total["protein"] += p.get("protein", 0)
+                total["fat"] += p.get("fat", 0)
+                total["carbs"] += p.get("carbs", 0)
+            
+            # Формируем новый текст
+            lines = []
+            for p in new_products:
+                name = p.get("name", "")
+                weight = p.get("weight_grams", 0)
+                cal = p.get("calories", 0)
+                prot = p.get("protein", 0)
+                fat = p.get("fat", 0)
+                carbs = p.get("carbs", 0)
+                lines.append(f"{name} - {weight}г, К {cal:.0f}, Б {prot:.1f}, Ж {fat:.1f}, У {carbs:.1f}")
+            
+            result_text = f"Обновлено:\n\n" + "\n".join(lines)
+            result_text += f"\n\nИТОГО: {total['calories']:.0f} ккал | Б: {total['protein']:.1f}г | Ж: {total['fat']:.1f}г | У: {total['carbs']:.1f}г"
+            result_text += "\n\nВерно?"
+            
+            await state.update_data(original_products=new_products, original_message=original_message)
+            await message.answer(result_text)
+        return
+    
+    # Если пользователь прислал корректировку (с цифрами и граммами)
+    if is_correction(user_text):
+        # Переотправляем в DeepSeek для пересчёта
+        waiting_msg = await message.answer("Пересчитываю...")
+        result = await food_search.parse_and_calculate(user_text)
+        await waiting_msg.delete()
+        
+        if not result["success"] or not result["data"].get("products"):
+            await message.answer("Не удалось распознать корректировку. Напишите, например:\nборщ 300г\nкефир 200г")
+            return
+        
+        new_products = result["data"].get("products", [])
+        total = result["data"].get("total", {})
+        
+        # Формируем ответ
+        lines = []
+        for p in new_products:
+            name = p.get("name", "")
+            weight = p.get("weight_grams", 0)
+            cal = p.get("calories", 0)
+            prot = p.get("protein", 0)
+            fat = p.get("fat", 0)
+            carbs = p.get("carbs", 0)
+            lines.append(f"{name} - {weight}г, К {cal:.0f}, Б {prot:.1f}, Ж {fat:.1f}, У {carbs:.1f}")
+        
+        result_text = f"Обновлено:\n\n" + "\n".join(lines)
+        result_text += f"\n\nИТОГО: {total['calories']:.0f} ккал | Б: {total['protein']:.1f}г | Ж: {total['fat']:.1f}г | У: {total['carbs']:.1f}г"
+        result_text += "\n\nВерно?"
+        
+        await state.update_data(original_products=new_products, original_message=user_text)
+        await message.answer(result_text)
+        return
+    
+    # Если ничего не подошло
+    await message.answer("Не понял. Напишите 'да' для сохранения, 'нет' для исправления, или просто правильные данные.")
+
 @dp.message()
-async def handle_message(message: types.Message):
+async def handle_message(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    
+    # Проверяем, не в режиме ли ожидания корректировки
+    current_state = await state.get_state()
+    if current_state == WaitingState.waiting_for_correction.state:
+        await handle_correction(message, state)
+        return
     
     waiting_msg = await message.answer("Считаю...")
     await bot.send_chat_action(message.chat.id, "typing")
@@ -87,9 +229,8 @@ async def handle_message(message: types.Message):
     
     await waiting_msg.delete()
     
-    if not result["success"]:
-        error_text = result.get('error', '')
-        await message.answer(f"Не удалось обработать.\n\n{error_text}\n\nПопробуйте написать по-другому, например:\nборщ 400г\nяичница 4 яйца\nстакан кефира")
+    if not result["success"] or not result["data"].get("products"):
+        await message.answer("Не удалось обработать. Попробуйте написать по-другому, например:\nборщ 400г\nяичница 4 яйца\nстакан кефира")
         return
     
     data = result["data"]
@@ -97,17 +238,33 @@ async def handle_message(message: types.Message):
     user_text = result.get("user_text", "")
     
     if not products:
-        await message.answer("Не удалось распознать продукты.\n\nПопробуйте написать по-другому, например:\nборщ 400г\nяичница 4 яйца\nстакан кефира")
+        await message.answer("Не удалось распознать продукты.")
         return
     
-    for p in products:
-        product_data = extract_product_data(p)
-        user_db.add_meal(user_id, product_data)
+    # Сохраняем в состояние, ждём подтверждения
+    await state.set_state(WaitingState.waiting_for_correction)
+    await state.update_data(original_products=products, original_message=message.text)
     
-    stats = user_db.get_today_stats(user_id)
-    
+    # Отправляем результат с вопросом
     if user_text:
-        await message.answer(user_text + "\n\n" + format_daily_stats(stats))
+        await message.answer(user_text + "\n\nВерно?")
+    else:
+        lines = []
+        for p in products:
+            name = p.get("name", "")
+            weight = p.get("weight_grams", 0)
+            cal = p.get("calories", 0)
+            prot = p.get("protein", 0)
+            fat = p.get("fat", 0)
+            carbs = p.get("carbs", 0)
+            lines.append(f"{name} - {weight}г, К {cal:.0f}, Б {prot:.1f}, Ж {fat:.1f}, У {carbs:.1f}")
+        
+        total = data.get("total", {})
+        result_text = "\n".join(lines)
+        result_text += f"\n\nИТОГО: {total.get('calories', 0):.0f} ккал | Б: {total.get('protein', 0):.1f}г | Ж: {total.get('fat', 0):.1f}г | У: {total.get('carbs', 0):.1f}г"
+        result_text += "\n\nВерно?"
+        
+        await message.answer(result_text)
 
 async def main():
     print("Бот запущен")
