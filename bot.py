@@ -3,7 +3,7 @@ import asyncio
 import re
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -17,7 +17,6 @@ dp = Dispatcher()
 food_search = FoodSearch()
 user_db = UserDB()
 
-# Состояния
 class WaitingState(StatesGroup):
     waiting_for_correction = State()
 
@@ -30,6 +29,16 @@ def format_daily_stats(stats: dict) -> str:
 Углеводы: {stats['carbs']:.1f} г
 """
 
+async def set_bot_commands():
+    commands = [
+        BotCommand(command="start", description="Начать работу"),
+        BotCommand(command="stats", description="Статистика за сегодня"),
+        BotCommand(command="history", description="История записей"),
+        BotCommand(command="clear", description="Очистить статистику"),
+        BotCommand(command="help", description="Помощь"),
+    ]
+    await bot.set_my_commands(commands)
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -38,7 +47,11 @@ async def cmd_start(message: types.Message, state: FSMContext):
         message.from_user.username,
         message.from_user.first_name
     )
-    await message.answer("FoodTracker Bot\n\nПросто напишите, что съели — я всё посчитаю!\n\nПримеры:\nяичница 4 яйца, кофе 2 ложки сахара\ngречка 200г, куриная грудка 150\nборщ 400г\n\nКоманды:\n/stats — статистика\n/history — история\n/clear — очистить")
+    await message.answer("FoodTracker Bot\n\nПросто напишите, что съели — я всё посчитаю!\n\nПримеры:\nяичница 4 яйца, кофе 2 ложки сахара\nгречка 200г, куриная грудка 150\nборщ 400г\n\nКоманды:\n/stats — статистика\n/history — история\n/clear — очистить")
+
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    await message.answer("Помощь:\n\n/stats — статистика за сегодня\n/history — история записей\n/clear — очистить статистику\n\nПросто напишите, что съели, например:\nборщ 400г\nяичница 4 яйца\nгречка 200г, курица 150")
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
@@ -85,61 +98,48 @@ def extract_product_data(product: dict) -> dict:
     }
 
 def is_affirmative(text: str) -> bool:
-    """Проверяет, является ли ответ утвердительным"""
     text = text.lower().strip()
-    affirmative = ["да", "yes", "+", "ок", "окей", "хорошо", "верно", "ага", "дада", "yes yes"]
+    affirmative = ["да", "yes", "+", "ок", "окей", "хорошо", "верно", "ага", "дада"]
     return any(word in text for word in affirmative)
 
 def is_negative(text: str) -> bool:
-    """Проверяет, является ли ответ отрицательным"""
     text = text.lower().strip()
     negative = ["нет", "no", "-", "не", "неверно", "не правильно", "не так"]
     return any(word in text for word in negative)
 
 def is_correction(text: str) -> bool:
-    """Проверяет, содержит ли сообщение корректировку (цифры + граммы/продукты)"""
     has_numbers = bool(re.search(r'\d+', text))
     has_units = bool(re.search(r'г|гр|грамм|шт|штук|ложк|стакан|чашка', text.lower()))
     return has_numbers or has_units
 
 def is_delete_command(text: str) -> bool:
-    """Проверяет, является ли сообщение командой удаления"""
     text = text.lower().strip()
     delete_words = ["удали", "убрать", "удалить", "убри", "убери", "delete", "remove"]
     return any(word in text for word in delete_words)
 
 @dp.message(WaitingState.waiting_for_correction)
 async def handle_correction(message: types.Message, state: FSMContext):
-    """Обрабатывает корректировку от пользователя"""
     user_text = message.text.strip().lower()
     data = await state.get_data()
-    original_message = data.get("original_message", "")
     original_products = data.get("original_products", [])
     
-    # Если пользователь сказал "да" или подтверждение
     if is_affirmative(user_text):
-        # Сохраняем исходные продукты
         for p in original_products:
             product_data = extract_product_data(p)
             user_db.add_meal(message.from_user.id, product_data)
-        
         stats = user_db.get_today_stats(message.from_user.id)
         await message.answer(f"Сохранено!\n\n{format_daily_stats(stats)}")
         await state.clear()
         return
     
-    # Если пользователь сказал "нет" без конкретики
     if is_negative(user_text) and not is_correction(user_text):
         await message.answer("Напишите правильные данные, например:\nборщ 300г\nкефир 200г\nили\nудали яйца")
         return
     
-    # Если команда удаления
     if is_delete_command(user_text):
-        # Ищем что удалить
         words_to_delete = re.findall(r'[\w]+', user_text.replace("удали", "").replace("убрать", "").replace("удалить", ""))
         if words_to_delete:
             to_delete = words_to_delete[0]
-            # Фильтруем продукты
             new_products = []
             for p in original_products:
                 if to_delete not in p.get("name", "").lower():
@@ -149,7 +149,6 @@ async def handle_correction(message: types.Message, state: FSMContext):
                 await message.answer(f"Не найден продукт '{to_delete}' для удаления.")
                 return
             
-            # Пересчитываем с новыми продуктами
             total = {"calories": 0, "protein": 0, "fat": 0, "carbs": 0}
             for p in new_products:
                 total["calories"] += p.get("calories", 0)
@@ -157,7 +156,6 @@ async def handle_correction(message: types.Message, state: FSMContext):
                 total["fat"] += p.get("fat", 0)
                 total["carbs"] += p.get("carbs", 0)
             
-            # Формируем новый текст
             lines = []
             for p in new_products:
                 name = p.get("name", "")
@@ -168,17 +166,15 @@ async def handle_correction(message: types.Message, state: FSMContext):
                 carbs = p.get("carbs", 0)
                 lines.append(f"{name} - {weight}г, К {cal:.0f}, Б {prot:.1f}, Ж {fat:.1f}, У {carbs:.1f}")
             
-            result_text = f"Обновлено:\n\n" + "\n".join(lines)
+            result_text = "Обновлено:\n\n" + "\n".join(lines)
             result_text += f"\n\nИТОГО: {total['calories']:.0f} ккал | Б: {total['protein']:.1f}г | Ж: {total['fat']:.1f}г | У: {total['carbs']:.1f}г"
             result_text += "\n\nВерно?"
             
-            await state.update_data(original_products=new_products, original_message=original_message)
+            await state.update_data(original_products=new_products)
             await message.answer(result_text)
         return
     
-    # Если пользователь прислал корректировку (с цифрами и граммами)
     if is_correction(user_text):
-        # Переотправляем в DeepSeek для пересчёта
         waiting_msg = await message.answer("Пересчитываю...")
         result = await food_search.parse_and_calculate(user_text)
         await waiting_msg.delete()
@@ -190,7 +186,6 @@ async def handle_correction(message: types.Message, state: FSMContext):
         new_products = result["data"].get("products", [])
         total = result["data"].get("total", {})
         
-        # Формируем ответ
         lines = []
         for p in new_products:
             name = p.get("name", "")
@@ -201,22 +196,20 @@ async def handle_correction(message: types.Message, state: FSMContext):
             carbs = p.get("carbs", 0)
             lines.append(f"{name} - {weight}г, К {cal:.0f}, Б {prot:.1f}, Ж {fat:.1f}, У {carbs:.1f}")
         
-        result_text = f"Обновлено:\n\n" + "\n".join(lines)
+        result_text = "Обновлено:\n\n" + "\n".join(lines)
         result_text += f"\n\nИТОГО: {total['calories']:.0f} ккал | Б: {total['protein']:.1f}г | Ж: {total['fat']:.1f}г | У: {total['carbs']:.1f}г"
         result_text += "\n\nВерно?"
         
-        await state.update_data(original_products=new_products, original_message=user_text)
+        await state.update_data(original_products=new_products)
         await message.answer(result_text)
         return
     
-    # Если ничего не подошло
     await message.answer("Не понял. Напишите 'да' для сохранения, 'нет' для исправления, или просто правильные данные.")
 
 @dp.message()
 async def handle_message(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     
-    # Проверяем, не в режиме ли ожидания корректировки
     current_state = await state.get_state()
     if current_state == WaitingState.waiting_for_correction.state:
         await handle_correction(message, state)
@@ -241,11 +234,9 @@ async def handle_message(message: types.Message, state: FSMContext):
         await message.answer("Не удалось распознать продукты.")
         return
     
-    # Сохраняем в состояние, ждём подтверждения
     await state.set_state(WaitingState.waiting_for_correction)
     await state.update_data(original_products=products, original_message=message.text)
     
-    # Отправляем результат с вопросом
     if user_text:
         await message.answer(user_text + "\n\nВерно?")
     else:
@@ -267,6 +258,7 @@ async def handle_message(message: types.Message, state: FSMContext):
         await message.answer(result_text)
 
 async def main():
+    await set_bot_commands()
     print("Бот запущен")
     await dp.start_polling(bot)
 
