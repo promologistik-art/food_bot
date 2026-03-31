@@ -1,46 +1,32 @@
 import json
 import asyncio
 import aiohttp
-import re
-from typing import Dict, Any, List
-from config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, FOOD_DB_PATH
+from typing import Dict, Any
+from config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
 
 class FoodSearch:
-    def __init__(self):
-        with open(FOOD_DB_PATH, 'r', encoding='utf-8') as f:
-            self.food_db = json.load(f)
-        print(f"Загружено продуктов: {len(self.food_db)}")
-    
     async def parse_and_calculate(self, message: str) -> Dict[str, Any]:
-        """DeepSeek возвращает JSON с продуктами для сохранения и текст для пользователя"""
-        
-        full_db_json = json.dumps(self.food_db, ensure_ascii=False, indent=2)
-        
-        prompt = f"""Ты — помощник по учёту питания.
+        prompt = f"""Ты — профессиональный диетолог-нутрициолог.
 
-БАЗА ПРОДУКТОВ (КБЖУ на 100 грамм). ИСПОЛЬЗУЙ ТОЛЬКО ЭТИ ДАННЫЕ:
-{full_db_json[:15000]}
+Пользователь написал: "{message}"
 
-Пользователь: "{message}"
-
-ПРАВИЛА:
-1. Найди каждый продукт в базе. Если точного совпадения нет — выбери максимально похожий.
-2. Рассчитай вес:
+Твоя задача:
+1. Разобрать сообщение на отдельные продукты
+2. Для каждого продукта рассчитать КБЖУ, используя ТОЛЬКО свои знания (не выдумывай)
+3. Учитывай вес:
    - 1 яйцо = 50г
-   - 1 кусок хлеба = 30г
    - 1 ложка сахара = 10г
+   - 1 кусок хлеба = 30г
    - 1 яблоко = 150г
    - 1 банан = 120г
-   - Если пользователь указал вес (200г, 150г) — используй его.
-3. Рассчитай КБЖУ: (значение_из_базы / 100) * вес_в_граммах
+   - Если пользователь указал вес (200г, 150г) — используй его
+4. Формула расчёта: калории = (калорийность_на_100г / 100) * вес_в_граммах
 
 Верни ТОЛЬКО JSON в этом формате:
 {{
     "products": [
         {{
-            "found_name": "название из базы",
-            "quantity": число,
-            "unit": "шт/г",
+            "name": "название продукта",
             "weight_grams": число,
             "calories": число,
             "protein": число,
@@ -54,18 +40,17 @@ class FoodSearch:
         "fat": число,
         "carbs": число
     }},
-    "user_text": "КРАТКИЙ текст для пользователя с итогами (без лишней воды)"
+    "user_text": "краткий текст для пользователя"
 }}
 
 Пример user_text:
-🥚 Яйцо куриное — 4 шт (200г) — 314 ккал
-☕ Кофе чёрный — 1 порция — 2 ккал
-🍬 Сахар — 2 ч.л. (20г) — 80 ккал
-🍚 Гречневая каша — 200г — 202 ккал
-🍗 Куриная грудка — 150г — 170 ккал
-🍎 Яблоко — 2 шт (300г) — 156 ккал
+Яйцо куриное — 4 шт (200г) — Калории: 314, Белки: 25.4, Жиры: 21.8, Углеводы: 1.4
+Кофе чёрный — 1 порция — Калории: 2, Белки: 0, Жиры: 0, Углеводы: 0
+Сахар — 2 ч.л. (20г) — Калории: 80, Белки: 0, Жиры: 0, Углеводы: 20
 ━━━━━━━━━━━━━━━━━━━━━
-ИТОГО: 924 ккал | Белки: 65г | Жиры: 28г | Углеводы: 110г"""
+ИТОГО: 396 ккал | Белки: 25.4г | Жиры: 21.8г | Углеводы: 21.4г
+
+Не используй эмодзи. Будь краток и точен."""
 
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -75,11 +60,11 @@ class FoodSearch:
         data = {
             "model": OPENAI_MODEL,
             "messages": [
-                {"role": "system", "content": "Ты — помощник по учёту питания. Отвечаешь ТОЛЬКО JSON. Никакого текста вне JSON."},
+                {"role": "system", "content": "Ты — диетолог. Отвечаешь ТОЛЬКО JSON. Никакого текста вне JSON. Не выдумывай цифры. Используй только свои знания."},
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.1,
-            "max_tokens": 3000
+            "max_tokens": 2000
         }
         
         try:
@@ -88,7 +73,7 @@ class FoodSearch:
                     f"{OPENAI_BASE_URL}/chat/completions",
                     headers=headers,
                     json=data,
-                    timeout=90
+                    timeout=60
                 ) as response:
                     if response.status != 200:
                         text = await response.text()
