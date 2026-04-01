@@ -19,7 +19,6 @@ TRIAL_DAYS = 5
 SUBSCRIPTION_PRICE = 300
 ADMIN_CONTACT = f"@{ADMIN_USERNAME}" if ADMIN_USERNAME else "@silverzen"
 
-# Коэффициенты активности для TDEE
 ACTIVITY_LEVELS = {
     "1": {"name": "Минимальная (сидячая работа)", "factor": 1.2},
     "2": {"name": "Низкая (1-2 тренировки в неделю)", "factor": 1.375},

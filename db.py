@@ -38,6 +38,7 @@ class UserDB:
             CREATE TABLE IF NOT EXISTS subscriptions (
                 user_id INTEGER PRIMARY KEY,
                 is_active BOOLEAN DEFAULT 1,
+                is_forever BOOLEAN DEFAULT 0,
                 trial_end DATE,
                 paid_until DATE,
                 FOREIGN KEY (user_id) REFERENCES users (user_id)
@@ -128,21 +129,17 @@ class UserDB:
         self.conn.commit()
     
     def calculate_bmr(self, profile: Dict) -> float:
-        """Расчёт базового метаболизма по формуле Миффлина-Сан Жеора"""
         weight = profile.get("weight", 70)
         height = profile.get("height", 170)
         age = profile.get("age", 30)
         gender = profile.get("gender", "male")
         
         if gender == "male":
-            bmr = 10 * weight + 6.25 * height - 5 * age + 5
+            return 10 * weight + 6.25 * height - 5 * age + 5
         else:
-            bmr = 10 * weight + 6.25 * height - 5 * age - 161
-        
-        return bmr
+            return 10 * weight + 6.25 * height - 5 * age - 161
     
     def calculate_tdee(self, profile: Dict) -> float:
-        """Расчёт суточной нормы калорий"""
         bmr = self.calculate_bmr(profile)
         activity_level = profile.get("activity_level", "2")
         factor = ACTIVITY_LEVELS.get(activity_level, {"factor": 1.375})["factor"]
@@ -151,17 +148,21 @@ class UserDB:
     def get_subscription_status(self, user_id: int) -> Dict[str, Any]:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT is_active, trial_end, paid_until FROM subscriptions WHERE user_id = ?",
+            "SELECT is_active, is_forever, trial_end, paid_until FROM subscriptions WHERE user_id = ?",
             (user_id,)
         )
         row = cursor.fetchone()
         
         if not row:
-            return {"is_active": True, "trial_end": None, "paid_until": None, "days_left": TRIAL_DAYS}
+            return {"is_active": True, "is_forever": False, "trial_end": None, "paid_until": None, "days_left": TRIAL_DAYS}
         
         is_active = row[0]
-        trial_end = row[1]
-        paid_until = row[2]
+        is_forever = row[1]
+        trial_end = row[2]
+        paid_until = row[3]
+        
+        if is_forever:
+            return {"is_active": True, "is_forever": True, "trial_end": None, "paid_until": None, "days_left": 9999}
         
         today = date.today()
         days_left = 0
@@ -178,6 +179,7 @@ class UserDB:
         
         return {
             "is_active": is_active and days_left > 0,
+            "is_forever": False,
             "trial_end": trial_end,
             "paid_until": paid_until,
             "days_left": days_left
@@ -187,10 +189,65 @@ class UserDB:
         cursor = self.conn.cursor()
         paid_until = (datetime.now() + timedelta(days=days)).date().isoformat()
         cursor.execute(
-            "UPDATE subscriptions SET is_active = 1, paid_until = ? WHERE user_id = ?",
+            "UPDATE subscriptions SET is_active = 1, is_forever = 0, paid_until = ? WHERE user_id = ?",
             (paid_until, user_id)
         )
         self.conn.commit()
+    
+    def activate_forever_subscription(self, user_id: int):
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE subscriptions SET is_active = 1, is_forever = 1, trial_end = NULL, paid_until = NULL WHERE user_id = ?",
+            (user_id,)
+        )
+        self.conn.commit()
+    
+    def extend_subscription(self, user_id: int, days: int):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT paid_until FROM subscriptions WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        
+        if row and row[0]:
+            current_end = date.fromisoformat(row[0])
+            new_end = max(current_end, date.today()) + timedelta(days=days)
+        else:
+            new_end = date.today() + timedelta(days=days)
+        
+        cursor.execute(
+            "UPDATE subscriptions SET is_active = 1, is_forever = 0, paid_until = ? WHERE user_id = ?",
+            (new_end.isoformat(), user_id)
+        )
+        self.conn.commit()
+    
+    def clear_all_user_data(self, user_id: int):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM meals WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM daily_stats WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM profiles WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        self.conn.commit()
+    
+    def get_user_info(self, user_id: int) -> Optional[Dict]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT username, first_name, created_at FROM users WHERE user_id = ?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            return None
+        
+        stats = self.get_today_stats(user_id)
+        sub = self.get_subscription_status(user_id)
+        
+        return {
+            "username": user[0],
+            "first_name": user[1],
+            "created_at": user[2],
+            "calories": stats["calories"],
+            "protein": stats["protein"],
+            "fat": stats["fat"],
+            "carbs": stats["carbs"],
+            "subscription": sub
+        }
     
     def add_meal(self, user_id: int, product: Dict[str, Any]):
         cursor = self.conn.cursor()
@@ -269,7 +326,7 @@ class UserDB:
         cursor = self.conn.cursor()
         cursor.execute('''
             SELECT u.user_id, u.username, u.first_name, u.created_at,
-                   s.trial_end, s.paid_until
+                   s.trial_end, s.paid_until, s.is_forever
             FROM users u
             LEFT JOIN subscriptions s ON u.user_id = s.user_id
             ORDER BY u.created_at DESC
@@ -281,7 +338,8 @@ class UserDB:
             "first_name": r[2],
             "created_at": r[3],
             "trial_end": r[4],
-            "paid_until": r[5]
+            "paid_until": r[5],
+            "is_forever": r[6]
         } for r in rows]
     
     def close(self):
