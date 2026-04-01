@@ -94,6 +94,13 @@ class UserDB:
         
         return user, is_new
     
+    def get_user_id_by_username(self, username: str) -> Optional[int]:
+        cursor = self.conn.cursor()
+        username = username.lstrip('@').lower()
+        cursor.execute("SELECT user_id FROM users WHERE LOWER(username) = ?", (username,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+    
     def get_profile(self, user_id: int) -> Optional[Dict]:
         cursor = self.conn.cursor()
         cursor.execute(

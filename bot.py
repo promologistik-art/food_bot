@@ -139,6 +139,14 @@ def is_delete_command(text: str) -> bool:
 def has_profile(user_id: int) -> bool:
     return user_db.get_profile(user_id) is not None
 
+async def get_user_id_or_username(user_input: str) -> int:
+    """Преобразует username или ID в user_id"""
+    user_input = user_input.strip()
+    if user_input.isdigit():
+        return int(user_input)
+    else:
+        return user_db.get_user_id_by_username(user_input)
+
 # ============ АДМИНСКИЕ КОМАНДЫ ============
 
 @dp.message(Command("admin_add_user"))
@@ -147,24 +155,33 @@ async def cmd_admin_add_user(message: types.Message, state: FSMContext):
         await message.answer("⛔ Нет доступа")
         return
     
-    await message.answer("Введите ID пользователя (можно получить из /admin_users)")
+    await message.answer("Введите ID пользователя или @username (можно получить из /admin_users)")
     await state.set_state(AdminState.waiting_for_user_id)
 
 @dp.message(AdminState.waiting_for_user_id)
 async def process_admin_user_id(message: types.Message, state: FSMContext):
-    try:
-        user_id = int(message.text.strip())
-        await state.update_data(user_id=user_id)
-        await message.answer(
-            "Выберите тип подписки:\n\n"
-            "1️⃣ Навсегда (бессрочно)\n"
-            "2️⃣ На количество дней\n\n"
-            "Отправьте 1 или 2"
-        )
-        await state.set_state(AdminState.waiting_for_days)
-    except ValueError:
-        await message.answer("❌ Неверный ID. Введите число.")
+    user_input = message.text.strip()
+    
+    if user_input.isdigit():
+        user_id = int(user_input)
+    else:
+        username = user_input.lstrip('@')
+        user_id = user_db.get_user_id_by_username(username)
+    
+    if not user_id:
+        await message.answer(f"❌ Пользователь {user_input} не найден. Убедитесь, что он хотя бы раз написал боту /start")
         await state.clear()
+        return
+    
+    await state.update_data(user_id=user_id)
+    await message.answer(
+        f"👤 Найден пользователь ID: {user_id}\n\n"
+        "Выберите тип подписки:\n\n"
+        "1️⃣ Навсегда (бессрочно)\n"
+        "2️⃣ На количество дней\n\n"
+        "Отправьте 1 или 2"
+    )
+    await state.set_state(AdminState.waiting_for_days)
 
 @dp.message(AdminState.waiting_for_days)
 async def process_admin_days(message: types.Message, state: FSMContext):
@@ -172,17 +189,22 @@ async def process_admin_days(message: types.Message, state: FSMContext):
     user_id = data.get("user_id")
     choice = message.text.strip()
     
+    user_info = user_db.get_user_info(user_id)
+    user_name = user_info.get('first_name', f"ID {user_id}") if user_info else f"ID {user_id}"
+    
     if choice == "1":
         user_db.activate_forever_subscription(user_id)
-        await message.answer(f"✅ Пользователю {user_id} выдана бессрочная подписка!")
+        await message.answer(f"✅ Пользователю {user_name} выдана бессрочная подписка!")
         await state.clear()
+        
         try:
             await bot.send_message(
                 user_id,
                 "🎉 Вам выдана бессрочная подписка! Теперь вы можете пользоваться ботом без ограничений."
             )
         except:
-            pass
+            await message.answer("⚠️ Не удалось отправить уведомление пользователю")
+            
     elif choice == "2":
         await message.answer("Введите количество дней (например: 30)")
         await state.set_state(AdminState.waiting_for_days_value)
@@ -197,15 +219,21 @@ async def process_admin_days_value(message: types.Message, state: FSMContext):
     try:
         days = int(message.text.strip())
         user_db.activate_subscription(user_id, days)
-        await message.answer(f"✅ Пользователю {user_id} выдана подписка на {days} дней!")
+        
+        user_info = user_db.get_user_info(user_id)
+        user_name = user_info.get('first_name', f"ID {user_id}") if user_info else f"ID {user_id}"
+        
+        await message.answer(f"✅ Пользователю {user_name} выдана подписка на {days} дней!")
         await state.clear()
+        
         try:
             await bot.send_message(
                 user_id,
-                f"🎉 Вам выдана подписка на {days} дней! Теперь вы можете пользоваться ботом без ограничений."
+                f"🎉 Вам выдана подписка на {days} дней! Теперь вы можете пользоваться ботом без ограничений.\n\nОсталось дней: {days}"
             )
         except:
-            pass
+            await message.answer("⚠️ Не удалось отправить уведомление пользователю")
+            
     except ValueError:
         await message.answer("❌ Неверное количество дней. Введите число.")
         await state.clear()
@@ -218,13 +246,20 @@ async def cmd_admin_remove_user(message: types.Message):
     
     parts = message.text.split()
     if len(parts) < 2:
-        await message.answer("Использование: /admin_remove_user user_id")
+        await message.answer("Использование: /admin_remove_user user_id или @username")
         return
     
     try:
-        user_id = int(parts[1])
+        user_id = await get_user_id_or_username(parts[1])
+        if not user_id:
+            await message.answer(f"❌ Пользователь {parts[1]} не найден")
+            return
+        
+        user_info = user_db.get_user_info(user_id)
+        user_name = user_info.get('first_name', f"ID {user_id}") if user_info else f"ID {user_id}"
+        
         user_db.clear_all_user_data(user_id)
-        await message.answer(f"✅ Пользователь {user_id} удалён. Все данные очищены.")
+        await message.answer(f"✅ Пользователь {user_name} удалён. Все данные очищены.")
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
@@ -236,23 +271,34 @@ async def cmd_admin_extend(message: types.Message):
     
     parts = message.text.split()
     if len(parts) < 3:
-        await message.answer("Использование: /admin_extend user_id days")
+        await message.answer("Использование: /admin_extend user_id или @username days")
         return
     
     try:
-        user_id = int(parts[1])
+        user_id = await get_user_id_or_username(parts[1])
+        if not user_id:
+            await message.answer(f"❌ Пользователь {parts[1]} не найден")
+            return
+        
         days = int(parts[2])
         user_db.extend_subscription(user_id, days)
-        await message.answer(f"✅ Подписка пользователя {user_id} продлена на {days} дней!")
         
+        user_info = user_db.get_user_info(user_id)
+        user_name = user_info.get('first_name', f"ID {user_id}") if user_info else f"ID {user_id}"
         subscription = user_db.get_subscription_status(user_id)
+        
+        await message.answer(f"✅ Подписка пользователя {user_name} продлена на {days} дней!")
+        
         try:
             await bot.send_message(
                 user_id,
-                f"🎉 Ваша подписка продлена! Осталось дней: {subscription['days_left']}"
+                f"🎉 Ваша подписка продлена на {days} дней!\n\nОсталось дней: {subscription['days_left']}"
             )
         except:
-            pass
+            await message.answer("⚠️ Не удалось отправить уведомление пользователю")
+            
+    except ValueError:
+        await message.answer("❌ Неверное количество дней. Введите число.")
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
@@ -264,18 +310,22 @@ async def cmd_admin_info(message: types.Message):
     
     parts = message.text.split()
     if len(parts) < 2:
-        await message.answer("Использование: /admin_info user_id")
+        await message.answer("Использование: /admin_info user_id или @username")
         return
     
     try:
-        user_id = int(parts[1])
+        user_id = await get_user_id_or_username(parts[1])
+        if not user_id:
+            await message.answer(f"❌ Пользователь {parts[1]} не найден")
+            return
+        
         user_info = user_db.get_user_info(user_id)
         
         if not user_info:
-            await message.answer(f"Пользователь {user_id} не найден")
+            await message.answer(f"Пользователь {parts[1]} не найден")
             return
         
-        text = f"📋 Информация о пользователе {user_id}\n\n"
+        text = f"📋 Информация о пользователе {parts[1]} (ID: {user_id})\n\n"
         text += f"👤 Имя: {user_info.get('first_name', 'Не указано')}\n"
         text += f"🔹 Username: @{user_info.get('username', 'нет')}\n"
         text += f"📅 Зарегистрирован: {user_info.get('created_at', 'Неизвестно')[:10]}\n"
@@ -335,22 +385,33 @@ async def cmd_admin_activate(message: types.Message):
     
     parts = message.text.split()
     if len(parts) < 2:
-        await message.answer("Использование: /admin_activate user_id [days]")
+        await message.answer("Использование: /admin_activate user_id или @username [days]")
         return
     
     try:
-        user_id = int(parts[1])
+        user_id = await get_user_id_or_username(parts[1])
+        if not user_id:
+            await message.answer(f"❌ Пользователь {parts[1]} не найден")
+            return
+        
         days = int(parts[2]) if len(parts) > 2 else 30
         user_db.activate_subscription(user_id, days)
-        await message.answer(f"✅ Подписка активирована для пользователя {user_id} на {days} дней")
+        
+        user_info = user_db.get_user_info(user_id)
+        user_name = user_info.get('first_name', f"ID {user_id}") if user_info else f"ID {user_id}"
+        
+        await message.answer(f"✅ Подписка активирована для {user_name} на {days} дней")
         
         try:
             await bot.send_message(
                 user_id,
-                f"🎉 Ваша подписка активирована на {days} дней!"
+                f"🎉 Ваша подписка активирована на {days} дней!\n\nТеперь вы можете пользоваться ботом без ограничений.\nОсталось дней: {days}"
             )
         except:
-            pass
+            await message.answer("⚠️ Не удалось отправить уведомление пользователю")
+            
+    except ValueError:
+        await message.answer("❌ Неверное количество дней. Введите число.")
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
@@ -506,13 +567,13 @@ async def cmd_help(message: types.Message):
     if is_admin(message.from_user.id, message.from_user.username):
         help_text += "\n\nАдмин-команды:\n"
         help_text += "/admin_users — список пользователей\n"
-        help_text += "/admin_info user_id — информация о пользователе\n"
+        help_text += "/admin_info user_id или @username — информация о пользователе\n"
         help_text += "/admin_add_user — добавить пользователя\n"
-        help_text += "/admin_extend user_id days — продлить подписку\n"
-        help_text += "/admin_remove_user user_id — удалить пользователя\n"
-        help_text += "/admin_activate user_id [days] — активация подписки"
+        help_text += "/admin_extend user_id или @username days — продлить подписку\n"
+        help_text += "/admin_remove_user user_id или @username — удалить пользователя\n"
+        help_text += "/admin_activate user_id или @username [days] — активация подписки"
     
-    await message.answer(help_text)  # Убираем parse_mode="Markdown"
+    await message.answer(help_text)
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
