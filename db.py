@@ -1,7 +1,7 @@
 import sqlite3
 from datetime import date, datetime, timedelta
 from typing import List, Dict, Any, Optional
-from config import USER_DB_PATH, TRIAL_DAYS
+from config import USER_DB_PATH, TRIAL_DAYS, ACTIVITY_LEVELS
 
 class UserDB:
     def __init__(self):
@@ -17,6 +17,20 @@ class UserDB:
                 username TEXT,
                 first_name TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS profiles (
+                user_id INTEGER PRIMARY KEY,
+                name TEXT,
+                weight REAL,
+                height REAL,
+                age INTEGER,
+                activity_level TEXT,
+                gender TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
             )
         ''')
         
@@ -78,6 +92,61 @@ class UserDB:
             is_new = True
         
         return user, is_new
+    
+    def get_profile(self, user_id: int) -> Optional[Dict]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT name, weight, height, age, activity_level, gender FROM profiles WHERE user_id = ?",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                "name": row[0],
+                "weight": row[1],
+                "height": row[2],
+                "age": row[3],
+                "activity_level": row[4],
+                "gender": row[5]
+            }
+        return None
+    
+    def save_profile(self, user_id: int, data: Dict):
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO profiles (user_id, name, weight, height, age, activity_level, gender, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (
+            user_id,
+            data.get("name"),
+            data.get("weight"),
+            data.get("height"),
+            data.get("age"),
+            data.get("activity_level"),
+            data.get("gender")
+        ))
+        self.conn.commit()
+    
+    def calculate_bmr(self, profile: Dict) -> float:
+        """Расчёт базового метаболизма по формуле Миффлина-Сан Жеора"""
+        weight = profile.get("weight", 70)
+        height = profile.get("height", 170)
+        age = profile.get("age", 30)
+        gender = profile.get("gender", "male")
+        
+        if gender == "male":
+            bmr = 10 * weight + 6.25 * height - 5 * age + 5
+        else:
+            bmr = 10 * weight + 6.25 * height - 5 * age - 161
+        
+        return bmr
+    
+    def calculate_tdee(self, profile: Dict) -> float:
+        """Расчёт суточной нормы калорий"""
+        bmr = self.calculate_bmr(profile)
+        activity_level = profile.get("activity_level", "2")
+        factor = ACTIVITY_LEVELS.get(activity_level, {"factor": 1.375})["factor"]
+        return bmr * factor
     
     def get_subscription_status(self, user_id: int) -> Dict[str, Any]:
         cursor = self.conn.cursor()
