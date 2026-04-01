@@ -39,7 +39,7 @@ class UserDB:
                 fat REAL,
                 carbohydrates REAL,
                 calories REAL,
-                quantity REAL DEFAULT 1.0,
+                weight_grams REAL DEFAULT 100,
                 meal_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -59,7 +59,6 @@ class UserDB:
         self.conn.commit()
     
     def get_or_create_user(self, user_id: int, username: str = None, first_name: str = None) -> tuple:
-        """Возвращает (user, is_new)"""
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         user = cursor.fetchone()
@@ -70,7 +69,6 @@ class UserDB:
                 "INSERT INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
                 (user_id, username, first_name)
             )
-            # Создаём подписку с тестовым периодом
             trial_end = (datetime.now() + timedelta(days=TRIAL_DAYS)).date().isoformat()
             cursor.execute(
                 "INSERT INTO subscriptions (user_id, trial_end) VALUES (?, ?)",
@@ -82,7 +80,6 @@ class UserDB:
         return user, is_new
     
     def get_subscription_status(self, user_id: int) -> Dict[str, Any]:
-        """Возвращает статус подписки пользователя"""
         cursor = self.conn.cursor()
         cursor.execute(
             "SELECT is_active, trial_end, paid_until FROM subscriptions WHERE user_id = ?",
@@ -118,7 +115,6 @@ class UserDB:
         }
     
     def activate_subscription(self, user_id: int, days: int = 30):
-        """Активирует платную подписку"""
         cursor = self.conn.cursor()
         paid_until = (datetime.now() + timedelta(days=days)).date().isoformat()
         cursor.execute(
@@ -135,12 +131,12 @@ class UserDB:
         fat = product.get("fat", 0)
         carbs = product.get("carbs", 0)
         calories = product.get("calories", 0)
-        quantity = product.get("weight_grams", 100) / 100
+        weight_grams = product.get("weight_grams", 100)
         
         cursor.execute('''
-            INSERT INTO meals (user_id, product_name, protein, fat, carbohydrates, calories, quantity)
+            INSERT INTO meals (user_id, product_name, protein, fat, carbohydrates, calories, weight_grams)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (user_id, product_name, protein, fat, carbs, calories, quantity))
+        ''', (user_id, product_name, protein, fat, carbs, calories, weight_grams))
         
         self.conn.commit()
         
@@ -155,8 +151,8 @@ class UserDB:
                 total_calories = total_calories + ?
         ''', (
             user_id, today,
-            protein * quantity, fat * quantity, carbs * quantity, calories * quantity,
-            protein * quantity, fat * quantity, carbs * quantity, calories * quantity
+            protein, fat, carbs, calories,
+            protein, fat, carbs, calories
         ))
         self.conn.commit()
     
@@ -176,14 +172,22 @@ class UserDB:
     def get_recent_meals(self, user_id: int, limit: int = 10) -> List[dict]:
         cursor = self.conn.cursor()
         cursor.execute('''
-            SELECT product_name, protein, fat, carbohydrates, calories, quantity, meal_time
+            SELECT product_name, protein, fat, carbohydrates, calories, weight_grams, meal_time
             FROM meals
             WHERE user_id = ?
             ORDER BY meal_time DESC
             LIMIT ?
         ''', (user_id, limit))
         rows = cursor.fetchall()
-        return [{"product_name": row[0], "protein": row[1], "fat": row[2], "carbohydrates": row[3], "calories": row[4], "quantity": row[5], "meal_time": row[6]} for row in rows]
+        return [{
+            "product_name": row[0],
+            "protein": row[1],
+            "fat": row[2],
+            "carbohydrates": row[3],
+            "calories": row[4],
+            "weight_grams": row[5],
+            "meal_time": row[6]
+        } for row in rows]
     
     def clear_today(self, user_id: int):
         cursor = self.conn.cursor()
@@ -193,7 +197,6 @@ class UserDB:
         self.conn.commit()
     
     def get_all_users(self) -> List[dict]:
-        """Получает список всех пользователей (для админки)"""
         cursor = self.conn.cursor()
         cursor.execute('''
             SELECT u.user_id, u.username, u.first_name, u.created_at,
@@ -203,7 +206,14 @@ class UserDB:
             ORDER BY u.created_at DESC
         ''')
         rows = cursor.fetchall()
-        return [{"user_id": r[0], "username": r[1], "first_name": r[2], "created_at": r[3], "trial_end": r[4], "paid_until": r[5]} for r in rows]
+        return [{
+            "user_id": r[0],
+            "username": r[1],
+            "first_name": r[2],
+            "created_at": r[3],
+            "trial_end": r[4],
+            "paid_until": r[5]
+        } for r in rows]
     
     def close(self):
         self.conn.close()

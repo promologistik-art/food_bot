@@ -8,7 +8,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import BOT_TOKEN, ADMIN_ID, ADMIN_CONTACT, TRIAL_DAYS, SUBSCRIPTION_PRICE
+from config import BOT_TOKEN, ADMIN_ID, ADMIN_USERNAME, ADMIN_CONTACT, TRIAL_DAYS, SUBSCRIPTION_PRICE
 from food_search import FoodSearch
 from db import UserDB
 
@@ -31,7 +31,6 @@ def format_daily_stats(stats: dict) -> str:
 """
 
 def format_subscription_status(subscription: dict) -> str:
-    """Форматирует статус подписки"""
     days = subscription.get("days_left", 0)
     if days > 0:
         return f"✅ Активна. Осталось дней: {days}"
@@ -50,7 +49,6 @@ async def set_bot_commands():
     await bot.set_my_commands(commands)
 
 async def notify_admin(user_id: int, username: str, first_name: str):
-    """Отправляет уведомление админу о новом пользователе"""
     if ADMIN_ID:
         await bot.send_message(
             ADMIN_ID,
@@ -59,6 +57,13 @@ async def notify_admin(user_id: int, username: str, first_name: str):
             f"Имя: {first_name}\n"
             f"Username: @{username}" if username else "Username: нет"
         )
+
+def is_admin(user_id: int, username: str = None) -> bool:
+    if ADMIN_ID and user_id == ADMIN_ID:
+        return True
+    if ADMIN_USERNAME and username and username.lower() == ADMIN_USERNAME.lower():
+        return True
+    return False
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -132,8 +137,8 @@ async def cmd_history(message: types.Message):
         return
     text = "Последние записи:\n\n"
     for meal in meals:
-        qty = f" x{meal['quantity']:.1f}" if meal['quantity'] != 1 else ""
-        text += f"{meal['product_name']}{qty} — {meal['calories'] * meal['quantity']:.0f} ккал\n"
+        weight = meal.get("weight_grams", 0)
+        text += f"{meal['product_name']} - {weight}г — {meal['calories']:.0f} ккал\n"
     await message.answer(text)
 
 @dp.message(Command("clear"))
@@ -153,10 +158,9 @@ async def handle_clear_callback(callback: types.CallbackQuery):
         await callback.message.edit_text("Отменено.")
     await callback.answer()
 
-# Админские команды
 @dp.message(Command("admin_users"))
 async def cmd_admin_users(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if not is_admin(message.from_user.id, message.from_user.username):
         await message.answer("⛔ Нет доступа")
         return
     
@@ -180,7 +184,7 @@ async def cmd_admin_users(message: types.Message):
 
 @dp.message(Command("admin_activate"))
 async def cmd_admin_activate(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if not is_admin(message.from_user.id, message.from_user.username):
         await message.answer("⛔ Нет доступа")
         return
     
@@ -209,7 +213,7 @@ def extract_product_data(product: dict) -> dict:
 
 def is_affirmative(text: str) -> bool:
     text = text.lower().strip()
-    affirmative = ["да", "yes", "+", "ок", "окей", "хорошо", "верно", "ага", "дада"]
+    affirmative = ["да", "yes", "+", "ок", "окей", "хорошо", "верно", "ага", "дада", "записывай"]
     return any(word in text for word in affirmative)
 
 def is_negative(text: str) -> bool:
@@ -238,7 +242,7 @@ async def handle_correction(message: types.Message, state: FSMContext):
             product_data = extract_product_data(p)
             user_db.add_meal(message.from_user.id, product_data)
         stats = user_db.get_today_stats(message.from_user.id)
-        await message.answer(f"Сохранено!\n\n{format_daily_stats(stats)}")
+        await message.answer(f"✅ Сохранено!\n\n{format_daily_stats(stats)}")
         await state.clear()
         return
     
@@ -278,7 +282,7 @@ async def handle_correction(message: types.Message, state: FSMContext):
             
             result_text = "Обновлено:\n\n" + "\n".join(lines)
             result_text += f"\n\nИТОГО: {total['calories']:.0f} ккал | Б: {total['protein']:.1f}г | Ж: {total['fat']:.1f}г | У: {total['carbs']:.1f}г"
-            result_text += "\n\nВерно?"
+            result_text += "\n\nЗаписываю?"
             
             await state.update_data(original_products=new_products)
             await message.answer(result_text)
@@ -308,7 +312,7 @@ async def handle_correction(message: types.Message, state: FSMContext):
         
         result_text = "Обновлено:\n\n" + "\n".join(lines)
         result_text += f"\n\nИТОГО: {total['calories']:.0f} ккал | Б: {total['protein']:.1f}г | Ж: {total['fat']:.1f}г | У: {total['carbs']:.1f}г"
-        result_text += "\n\nВерно?"
+        result_text += "\n\nЗаписываю?"
         
         await state.update_data(original_products=new_products)
         await message.answer(result_text)
@@ -320,7 +324,6 @@ async def handle_correction(message: types.Message, state: FSMContext):
 async def handle_message(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     
-    # Проверяем подписку
     subscription = user_db.get_subscription_status(user_id)
     if subscription["days_left"] <= 0 and not subscription["is_active"]:
         await message.answer(
@@ -358,7 +361,7 @@ async def handle_message(message: types.Message, state: FSMContext):
     await state.update_data(original_products=products, original_message=message.text)
     
     if user_text:
-        await message.answer(user_text + "\n\nВерно?")
+        await message.answer(user_text + "\n\nЗаписываю?")
     else:
         lines = []
         for p in products:
@@ -373,7 +376,7 @@ async def handle_message(message: types.Message, state: FSMContext):
         total = data.get("total", {})
         result_text = "\n".join(lines)
         result_text += f"\n\nИТОГО: {total.get('calories', 0):.0f} ккал | Б: {total.get('protein', 0):.1f}г | Ж: {total.get('fat', 0):.1f}г | У: {total.get('carbs', 0):.1f}г"
-        result_text += "\n\nВерно?"
+        result_text += "\n\nЗаписываю?"
         
         await message.answer(result_text)
 
