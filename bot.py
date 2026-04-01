@@ -275,7 +275,7 @@ async def cmd_admin_info(message: types.Message):
             await message.answer(f"Пользователь {user_id} не найден")
             return
         
-        text = f"📋 *Информация о пользователе {user_id}*\n\n"
+        text = f"📋 Информация о пользователе {user_id}\n\n"
         text += f"👤 Имя: {user_info.get('first_name', 'Не указано')}\n"
         text += f"🔹 Username: @{user_info.get('username', 'нет')}\n"
         text += f"📅 Зарегистрирован: {user_info.get('created_at', 'Неизвестно')[:10]}\n"
@@ -293,7 +293,7 @@ async def cmd_admin_info(message: types.Message):
         elif sub.get('trial_end'):
             text += f"🎁 Тестовый период: до {sub['trial_end']}\n"
         
-        await message.answer(text, parse_mode="Markdown")
+        await message.answer(text)
         
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
@@ -309,7 +309,7 @@ async def cmd_admin_users(message: types.Message):
         await message.answer("Нет пользователей")
         return
     
-    text = "📋 *Список пользователей:*\n\n"
+    text = "📋 Список пользователей:\n\n"
     for u in users:
         text += f"ID: {u['user_id']}\n"
         text += f"Имя: {u['first_name']}\n"
@@ -325,7 +325,7 @@ async def cmd_admin_users(message: types.Message):
             text += f"🎁 Триал до: {u['trial_end']}\n"
         text += "─" * 20 + "\n"
     
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text)
 
 @dp.message(Command("admin_activate"))
 async def cmd_admin_activate(message: types.Message):
@@ -504,7 +504,7 @@ async def cmd_help(message: types.Message):
     )
     
     if is_admin(message.from_user.id, message.from_user.username):
-        help_text += "\n\n*Админ-команды:*\n"
+        help_text += "\n\nАдмин-команды:\n"
         help_text += "/admin_users — список пользователей\n"
         help_text += "/admin_info user_id — информация о пользователе\n"
         help_text += "/admin_add_user — добавить пользователя\n"
@@ -512,7 +512,7 @@ async def cmd_help(message: types.Message):
         help_text += "/admin_remove_user user_id — удалить пользователя\n"
         help_text += "/admin_activate user_id [days] — активация подписки"
     
-    await message.answer(help_text, parse_mode="Markdown")
+    await message.answer(help_text)  # Убираем parse_mode="Markdown"
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
