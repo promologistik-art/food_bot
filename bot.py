@@ -140,7 +140,6 @@ def has_profile(user_id: int) -> bool:
     return user_db.get_profile(user_id) is not None
 
 async def get_user_id_or_username(user_input: str) -> int:
-    """Преобразует username или ID в user_id"""
     user_input = user_input.strip()
     if user_input.isdigit():
         return int(user_input)

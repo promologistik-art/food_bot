@@ -1,12 +1,16 @@
 import sqlite3
+import os
 from datetime import date, datetime, timedelta
 from typing import List, Dict, Any, Optional
 from config import USER_DB_PATH, TRIAL_DAYS, ACTIVITY_LEVELS
 
 class UserDB:
     def __init__(self):
+        # Убеждаемся, что папка для базы существует
+        os.makedirs(os.path.dirname(USER_DB_PATH), exist_ok=True)
         self.conn = sqlite3.connect(USER_DB_PATH)
         self.create_tables()
+        print(f"✅ База данных подключена: {USER_DB_PATH}")
     
     def create_tables(self):
         cursor = self.conn.cursor()
