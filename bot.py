@@ -50,13 +50,7 @@ def format_daily_stats(stats: dict, tdee: float = None) -> str:
         percent = (stats['calories'] / tdee) * 100
         text += f"\nОт суточной нормы: {percent:.0f}% (норма: {tdee:.0f} ккал)"
         
-        if percent < 80:
-            text += "\n⚠️ Вы недоедаете!"
-        elif percent > 120:
-            text += "\n⚠️ Вы переедаете!"
-        else:
-            text += "\n✅ Вы в норме!"
-    
+            
     return text
 
 def format_subscription_status(subscription: dict) -> str:
