@@ -18,11 +18,13 @@ dp = Dispatcher()
 food_search = FoodSearch()
 user_db = UserDB()
 
+# ============ СОСТОЯНИЯ ============
+
 class ProfileState(StatesGroup):
     waiting_for_name = State()
+    waiting_for_age = State()
     waiting_for_weight = State()
     waiting_for_height = State()
-    waiting_for_age = State()
     waiting_for_gender = State()
     waiting_for_activity = State()
 
@@ -33,6 +35,8 @@ class AdminState(StatesGroup):
     waiting_for_user_id = State()
     waiting_for_days = State()
     waiting_for_days_value = State()
+
+# ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
 
 def format_daily_stats(stats: dict, tdee: float = None) -> str:
     text = f"""
@@ -71,6 +75,7 @@ async def set_bot_commands():
         BotCommand(command="history", description="История записей"),
         BotCommand(command="clear", description="Очистить статистику"),
         BotCommand(command="profile", description="Мой профиль"),
+        BotCommand(command="profile_edit", description="Изменить профиль"),
         BotCommand(command="subscription", description="Статус подписки"),
         BotCommand(command="help", description="Помощь"),
     ]
@@ -80,10 +85,7 @@ async def notify_admin(user_id: int, username: str, first_name: str):
     if ADMIN_ID:
         await bot.send_message(
             ADMIN_ID,
-            f"🆕 Новый пользователь!\n\n"
-            f"ID: {user_id}\n"
-            f"Имя: {first_name}\n"
-            f"Username: @{username}" if username else "Username: нет"
+            f"🆕 Новый пользователь!\n\nID: {user_id}\nИмя: {first_name}\nUsername: @{username}" if username else "Username: нет"
         )
 
 def is_admin(user_id: int, username: str = None) -> bool:
@@ -95,8 +97,8 @@ def is_admin(user_id: int, username: str = None) -> bool:
 
 def get_gender_keyboard():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👨 Мужской", callback_data="gender_male"),
-         InlineKeyboardButton(text="👩 Женский", callback_data="gender_female")]
+        [InlineKeyboardButton(text="Мужской", callback_data="gender_male"),
+         InlineKeyboardButton(text="Женский", callback_data="gender_female")]
     ])
     return keyboard
 
@@ -414,29 +416,7 @@ async def cmd_admin_activate(message: types.Message):
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
-# ============ ОСНОВНЫЕ КОМАНДЫ ============
-
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message, state: FSMContext):
-    await state.clear()
-    user, is_new = user_db.get_or_create_user(
-        message.from_user.id,
-        message.from_user.username,
-        message.from_user.first_name
-    )
-    
-    if is_new:
-        await notify_admin(message.from_user.id, message.from_user.username, message.from_user.first_name)
-    
-    subscription = user_db.get_subscription_status(message.from_user.id)
-    profile = user_db.get_profile(message.from_user.id)
-    
-    welcome_text = f"FoodTracker Bot\n\nПросто напишите, что съели — я всё посчитаю!\n\n📊 Статус подписки: {format_subscription_status(subscription)}"
-    
-    if not profile:
-        welcome_text += "\n\n👋 *Давайте познакомимся!*\nЗаполните профиль, чтобы я мог рассчитывать вашу суточную норму калорий.\n\nИспользуйте команду /profile для настройки."
-    
-    await message.answer(welcome_text, parse_mode="Markdown")
+# ============ ПРОФИЛЬ ============
 
 @dp.message(Command("profile"))
 async def cmd_profile(message: types.Message, state: FSMContext):
@@ -446,26 +426,26 @@ async def cmd_profile(message: types.Message, state: FSMContext):
         bmr = user_db.calculate_bmr(profile)
         tdee = user_db.calculate_tdee(profile)
         activity_name = ACTIVITY_LEVELS.get(profile["activity_level"], {"name": "Не указано"})["name"]
+        gender_text = "Мужской" if profile["gender"] == "male" else "Женский"
         
-        await message.answer(
-            f"📋 *Ваш профиль*\n\n"
+        text = (
+            f"📋 Ваш профиль\n\n"
             f"👤 Имя: {profile['name']}\n"
             f"⚖️ Вес: {profile['weight']} кг\n"
             f"📏 Рост: {profile['height']} см\n"
             f"🎂 Возраст: {profile['age']} лет\n"
-            f"👫 Пол: {'Мужской' if profile['gender'] == 'male' else 'Женский'}\n"
+            f"👫 Пол: {gender_text}\n"
             f"🏃 Активность: {activity_name}\n\n"
-            f"📊 *Расчёты:*\n"
+            f"📊 Расчёты:\n"
             f"Базовый метаболизм (BMR): {bmr:.0f} ккал\n"
             f"Суточная норма (TDEE): {tdee:.0f} ккал\n\n"
-            f"Чтобы изменить данные, используйте /profile_edit",
-            parse_mode="Markdown"
+            f"Чтобы изменить данные, используйте /profile_edit"
         )
+        await message.answer(text)
     else:
         await message.answer(
-            "👋 *Давайте познакомимся!*\n\n"
-            "Как вас зовут? (напишите имя)",
-            parse_mode="Markdown"
+            "👋 Давайте познакомимся!\n\n"
+            "Как вас зовут? (напишите имя)"
         )
         await state.set_state(ProfileState.waiting_for_name)
 
@@ -540,6 +520,30 @@ async def process_profile_activity(callback: types.CallbackQuery, state: FSMCont
     )
     await state.clear()
     await callback.answer()
+
+# ============ ОСНОВНЫЕ КОМАНДЫ ============
+
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
+    user, is_new = user_db.get_or_create_user(
+        message.from_user.id,
+        message.from_user.username,
+        message.from_user.first_name
+    )
+    
+    if is_new:
+        await notify_admin(message.from_user.id, message.from_user.username, message.from_user.first_name)
+    
+    subscription = user_db.get_subscription_status(message.from_user.id)
+    profile = user_db.get_profile(message.from_user.id)
+    
+    welcome_text = f"FoodTracker Bot\n\nПросто напишите, что съели — я всё посчитаю!\n\n📊 Статус подписки: {format_subscription_status(subscription)}"
+    
+    if not profile:
+        welcome_text += "\n\n👋 Давайте познакомимся!\nЗаполните профиль, чтобы я мог рассчитывать вашу суточную норму калорий.\n\nИспользуйте команду /profile для настройки."
+    
+    await message.answer(welcome_text)
 
 @dp.message(Command("subscription"))
 async def cmd_subscription(message: types.Message):
@@ -621,6 +625,8 @@ async def handle_clear_callback(callback: types.CallbackQuery):
         await callback.message.edit_text("Отменено.")
     await callback.answer()
 
+# ============ ОБРАБОТЧИК КОРРЕКЦИИ ============
+
 @dp.message(WaitingState.waiting_for_correction)
 async def handle_correction(message: types.Message, state: FSMContext):
     user_text = message.text.strip().lower()
@@ -639,9 +645,9 @@ async def handle_correction(message: types.Message, state: FSMContext):
         response = f"✅ Сохранено!\n\n{format_daily_stats(stats, tdee)}"
         
         if not has_profile(message.from_user.id):
-            response += "\n\n📝 *Если мы познакомимся, то я могу давать больше информации.*\nИспользуйте команду /profile для настройки."
+            response += "\n\n📝 Если мы познакомимся, то я могу давать больше информации.\nИспользуйте команду /profile для настройки."
         
-        await message.answer(response, parse_mode="Markdown")
+        await message.answer(response)
         await state.clear()
         return
     
@@ -719,6 +725,8 @@ async def handle_correction(message: types.Message, state: FSMContext):
     
     await message.answer("Не понял. Напишите 'да' для сохранения, 'нет' для исправления, или просто правильные данные.")
 
+# ============ ОСНОВНОЙ ОБРАБОТЧИК ============
+
 @dp.message()
 async def handle_message(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -778,6 +786,8 @@ async def handle_message(message: types.Message, state: FSMContext):
         result_text += "\n\nЗаписываю?"
         
         await message.answer(result_text)
+
+# ============ ЗАПУСК ============
 
 async def main():
     await set_bot_commands()
