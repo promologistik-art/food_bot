@@ -415,7 +415,7 @@ async def cmd_admin_activate(message: types.Message):
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
-# ============ НОВЫЕ АДМИНСКИЕ КОМАНДЫ (РЕФЕРАЛЫ) ============
+# ============ РЕФЕРАЛЬНЫЕ КОМАНДЫ ============
 
 @dp.message(Command("ref"))
 async def cmd_create_referral(message: types.Message):
@@ -449,34 +449,20 @@ async def cmd_create_referral(message: types.Message):
         await message.answer("Количество месяцев не может быть отрицательным")
         return
     
-    # Находим пользователя
-    user_id = user_db.get_user_id_by_username(username)
-    if not user_id:
-        # Создаём временный ID для пользователя, который ещё не запускал бота
-        user_id = -abs(hash(username))
-            await message.answer(
-            f"⚠️ Пользователь @{username} ещё не запускал бота.\n"
-            f"Ссылка создана, но бонусные месяцы будут начислены только после его первого /start.\n\n"
-            f"✅ Реферальная ссылка создана для @{username}"
-        )
-    
-    # Генерируем ссылку
-    code = user_db.generate_referral_link(user_id, commission_percent, bonus_months)
+    # Генерируем ссылку (без проверки существования пользователя)
+    code = user_db.generate_referral_link(username, commission_percent, bonus_months)
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={code}"
     
-    # Получаем информацию о пользователе
-    user_info = user_db.get_user_info(user_id)
-    user_name = user_info.get('first_name', username) if user_info else username
-    
     await message.answer(
-        f"✅ Реферальная ссылка создана для @{username} ({user_name})\n\n"
+        f"✅ Реферальная ссылка создана для @{username}\n\n"
         f"🔗 Ссылка: {link}\n\n"
         f"📊 Условия:\n"
         f"• Комиссия: {commission_percent}% от оплат\n"
         f"• Бонус рефералу: {bonus_months} месяц(ев) бесплатной подписки\n\n"
         f"При переходе по ссылке новый пользователь получит +3 дня к тестовому периоду.\n"
-        f"При оплате подписки рефералу начислится комиссия."
+        f"При оплате подписки рефералу начислится комиссия.\n\n"
+        f"⚠️ Пользователь @{username} получит бонусные месяцы после первого запуска бота."
     )
 
 @dp.message(Command("ref_stats"))
@@ -659,12 +645,10 @@ async def process_profile_activity(callback: types.CallbackQuery, state: FSMCont
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     
-    # Извлекаем реферальный код из команды start
     args = message.text.split()
     referral_code = None
     if len(args) > 1:
         referral_code = args[1]
-        # Проверяем, что код начинается с ref_
         if not referral_code.startswith('ref_'):
             referral_code = None
     
@@ -940,7 +924,7 @@ async def handle_message(message: types.Message, state: FSMContext):
         return
     
     await state.set_state(WaitingState.waiting_for_correction)
-    await state.update_d# Находим пользователяata(original_products=products, original_message=message.text)
+    await state.update_data(original_products=products, original_message=message.text)
     
     if user_text:
         await message.answer(user_text + "\n\nЗаписываю?")
