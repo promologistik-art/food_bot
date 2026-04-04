@@ -452,8 +452,13 @@ async def cmd_create_referral(message: types.Message):
     # Находим пользователя
     user_id = user_db.get_user_id_by_username(username)
     if not user_id:
-        await message.answer(f"Пользователь @{username} не найден. Убедитесь, что он написал боту /start")
-        return
+        # Создаём временный ID для пользователя, который ещё не запускал бота
+        user_id = -abs(hash(username))
+            await message.answer(
+            f"⚠️ Пользователь @{username} ещё не запускал бота.\n"
+            f"Ссылка создана, но бонусные месяцы будут начислены только после его первого /start.\n\n"
+            f"✅ Реферальная ссылка создана для @{username}"
+        )
     
     # Генерируем ссылку
     code = user_db.generate_referral_link(user_id, commission_percent, bonus_months)
@@ -935,7 +940,7 @@ async def handle_message(message: types.Message, state: FSMContext):
         return
     
     await state.set_state(WaitingState.waiting_for_correction)
-    await state.update_data(original_products=products, original_message=message.text)
+    await state.update_d# Находим пользователяata(original_products=products, original_message=message.text)
     
     if user_text:
         await message.answer(user_text + "\n\nЗаписываю?")
