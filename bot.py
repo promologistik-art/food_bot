@@ -419,7 +419,6 @@ async def cmd_admin_activate(message: types.Message):
 
 @dp.message(Command("ref"))
 async def cmd_create_referral(message: types.Message):
-    """Создаёт реферальную ссылку для пользователя"""
     if not is_admin(message.from_user.id, message.from_user.username):
         await message.answer("Нет доступа")
         return
@@ -449,7 +448,6 @@ async def cmd_create_referral(message: types.Message):
         await message.answer("Количество месяцев не может быть отрицательным")
         return
     
-    # Генерируем ссылку (без проверки существования пользователя)
     code = user_db.generate_referral_link(username, commission_percent, bonus_months)
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={code}"
@@ -467,7 +465,6 @@ async def cmd_create_referral(message: types.Message):
 
 @dp.message(Command("ref_stats"))
 async def cmd_ref_stats(message: types.Message):
-    """Показывает статистику по рефералам"""
     if not is_admin(message.from_user.id, message.from_user.username):
         await message.answer("Нет доступа")
         return
@@ -503,7 +500,6 @@ async def cmd_ref_stats(message: types.Message):
 
 @dp.message(Command("ref_link_info"))
 async def cmd_ref_link_info(message: types.Message):
-    """Показывает информацию о конкретной реферальной ссылке"""
     if not is_admin(message.from_user.id, message.from_user.username):
         await message.answer("Нет доступа")
         return
