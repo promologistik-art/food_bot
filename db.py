@@ -204,7 +204,7 @@ class UserDB:
         
         # Генерируем уникальный код
         while True:
-            code = 'ref_' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+            code = 'ref_' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=3))
             cursor.execute("SELECT code FROM referral_links WHERE code = ?", (code,))
             if not cursor.fetchone():
                 break
