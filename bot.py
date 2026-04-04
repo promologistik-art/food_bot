@@ -123,7 +123,7 @@ def is_negative(text: str) -> bool:
 
 def is_correction(text: str) -> bool:
     has_numbers = bool(re.search(r'\d+', text))
-    has_units = bool(re.search(r'г|гр|грамм|шт|штук|ложк|стакан|чашка', text.lower()))
+    has_units = bool(re.search(r'г|гр|грамм|шт|штук|ложк|стакан|чашка|мл', text.lower()))
     return has_numbers or has_units
 
 def is_delete_command(text: str) -> bool:
@@ -337,6 +337,12 @@ async def cmd_admin_info(message: types.Message):
         elif sub.get('trial_end'):
             text += f"Тестовый период: до {sub['trial_end']}\n"
         
+        ref_stats = user_info.get('referral_stats', {})
+        text += f"\n📊 Реферальная статистика:\n"
+        text += f"   Привёл: {ref_stats.get('total_refs', 0)} пользователей\n"
+        text += f"   Оплатили: {ref_stats.get('paid_refs', 0)}\n"
+        text += f"   Сумма к выплате: {ref_stats.get('total_commission', 0):.0f} ₽"
+        
         await message.answer(text)
         
     except Exception as e:
@@ -408,6 +414,134 @@ async def cmd_admin_activate(message: types.Message):
         await message.answer("Неверное количество дней. Введите число.")
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
+
+# ============ НОВЫЕ АДМИНСКИЕ КОМАНДЫ (РЕФЕРАЛЫ) ============
+
+@dp.message(Command("ref"))
+async def cmd_create_referral(message: types.Message):
+    """Создаёт реферальную ссылку для пользователя"""
+    if not is_admin(message.from_user.id, message.from_user.username):
+        await message.answer("Нет доступа")
+        return
+    
+    parts = message.text.split()
+    if len(parts) < 4:
+        await message.answer(
+            "Использование: /ref @username процент месяцы\n\n"
+            "Пример: /ref @john 50 12\n"
+            "Пример: /ref @jane 20 1"
+        )
+        return
+    
+    username = parts[1].lstrip('@')
+    try:
+        commission_percent = int(parts[2])
+        bonus_months = int(parts[3])
+    except ValueError:
+        await message.answer("Процент и месяцы должны быть числами")
+        return
+    
+    if commission_percent < 0 or commission_percent > 100:
+        await message.answer("Процент должен быть от 0 до 100")
+        return
+    
+    if bonus_months < 0:
+        await message.answer("Количество месяцев не может быть отрицательным")
+        return
+    
+    # Находим пользователя
+    user_id = user_db.get_user_id_by_username(username)
+    if not user_id:
+        await message.answer(f"Пользователь @{username} не найден. Убедитесь, что он написал боту /start")
+        return
+    
+    # Генерируем ссылку
+    code = user_db.generate_referral_link(user_id, commission_percent, bonus_months)
+    link = f"https://t.me/{bot.username}?start={code}"
+    
+    # Получаем информацию о пользователе
+    user_info = user_db.get_user_info(user_id)
+    user_name = user_info.get('first_name', username) if user_info else username
+    
+    await message.answer(
+        f"✅ Реферальная ссылка создана для @{username} ({user_name})\n\n"
+        f"🔗 Ссылка: {link}\n\n"
+        f"📊 Условия:\n"
+        f"• Комиссия: {commission_percent}% от оплат\n"
+        f"• Бонус рефералу: {bonus_months} месяц(ев) бесплатной подписки\n\n"
+        f"При переходе по ссылке новый пользователь получит +3 дня к тестовому периоду.\n"
+        f"При оплате подписки рефералу начислится комиссия."
+    )
+
+@dp.message(Command("ref_stats"))
+async def cmd_ref_stats(message: types.Message):
+    """Показывает статистику по рефералам"""
+    if not is_admin(message.from_user.id, message.from_user.username):
+        await message.answer("Нет доступа")
+        return
+    
+    stats = user_db.get_referral_stats()
+    
+    if not stats:
+        await message.answer("Нет реферальных ссылок")
+        return
+    
+    text = "📊 Статистика рефералов:\n\n"
+    total_refs = 0
+    total_paid = 0
+    total_commission = 0
+    
+    for i, s in enumerate(stats, 1):
+        username = f"@{s['username']}" if s['username'] else s['first_name']
+        text += f"{i}. {username}\n"
+        text += f"   Комиссия: {s['commission_percent']}% | Бонус: {s['bonus_months']} мес\n"
+        text += f"   Привёл: {s['total_refs']} (оплатили: {s['paid_refs']})\n"
+        text += f"   Сумма к выплате: {s['total_commission']:.0f} ₽\n\n"
+        
+        total_refs += s['total_refs']
+        total_paid += s['paid_refs']
+        total_commission += s['total_commission']
+    
+    text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    text += f"Всего приведено: {total_refs}\n"
+    text += f"Всего оплатили: {total_paid}\n"
+    text += f"Общая сумма к выплате: {total_commission:.0f} ₽"
+    
+    await message.answer(text)
+
+@dp.message(Command("ref_link_info"))
+async def cmd_ref_link_info(message: types.Message):
+    """Показывает информацию о конкретной реферальной ссылке"""
+    if not is_admin(message.from_user.id, message.from_user.username):
+        await message.answer("Нет доступа")
+        return
+    
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("Использование: /ref_link_info код_ссылки")
+        return
+    
+    code = parts[1]
+    info = user_db.get_referral_link_info(code)
+    
+    if not info:
+        await message.answer(f"Ссылка с кодом {code} не найдена")
+        return
+    
+    username = f"@{info['username']}" if info['username'] else info['first_name']
+    bot_username = (await bot.get_me()).username
+    
+    text = f"📋 Информация о реферальной ссылке\n\n"
+    text += f"🔗 Ссылка: https://t.me/{bot_username}?start={code}\n"
+    text += f"👤 Реферал: {username}\n"
+    text += f"💰 Комиссия: {info['commission_percent']}%\n"
+    text += f"🎁 Бонус рефералу: {info['bonus_months']} мес\n"
+    text += f"📅 Создана: {info['created_at'][:10]}\n"
+    text += f"📊 Статистика:\n"
+    text += f"   Переходов: {info['total_refs']}\n"
+    text += f"   Оплатили: {info['paid_refs']}"
+    
+    await message.answer(text)
 
 # ============ ПРОФИЛЬ ============
 
@@ -518,14 +652,31 @@ async def process_profile_activity(callback: types.CallbackQuery, state: FSMCont
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
+    
+    # Извлекаем реферальный код из команды start
+    args = message.text.split()
+    referral_code = None
+    if len(args) > 1:
+        referral_code = args[1]
+        # Проверяем, что код начинается с ref_
+        if not referral_code.startswith('ref_'):
+            referral_code = None
+    
     user, is_new = user_db.get_or_create_user(
         message.from_user.id,
         message.from_user.username,
-        message.from_user.first_name
+        message.from_user.first_name,
+        referral_code
     )
     
     if is_new:
         await notify_admin(message.from_user.id, message.from_user.username, message.from_user.first_name)
+        
+        if referral_code:
+            await message.answer(
+                "🎉 Добро пожаловать!\n\n"
+                "Вы перешли по реферальной ссылке и получили +3 дня к тестовому периоду!"
+            )
     
     subscription = user_db.get_subscription_status(message.from_user.id)
     profile = user_db.get_profile(message.from_user.id)
@@ -560,15 +711,19 @@ async def cmd_help(message: types.Message):
     )
     
     if is_admin(message.from_user.id, message.from_user.username):
-        help_text += "\n\nАдмин-команды:\n"
+        help_text += "\n\n*Админ-команды:*\n"
         help_text += "/admin_users — список пользователей\n"
         help_text += "/admin_info user_id или @username — информация о пользователе\n"
         help_text += "/admin_add_user — добавить пользователя\n"
         help_text += "/admin_extend user_id или @username days — продлить подписку\n"
         help_text += "/admin_remove_user user_id или @username — удалить пользователя\n"
-        help_text += "/admin_activate user_id или @username [days] — активация подписки"
+        help_text += "/admin_activate user_id или @username [days] — активация подписки\n\n"
+        help_text += "*Реферальные команды:*\n"
+        help_text += "/ref @username процент месяцы — создать реферальную ссылку\n"
+        help_text += "/ref_stats — статистика по рефералам\n"
+        help_text += "/ref_link_info код — информация о ссылке"
     
-    await message.answer(help_text)
+    await message.answer(help_text, parse_mode="Markdown")
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
@@ -621,11 +776,12 @@ async def handle_clear_callback(callback: types.CallbackQuery):
 
 @dp.message(WaitingState.waiting_for_correction)
 async def handle_correction(message: types.Message, state: FSMContext):
-    user_text = message.text.strip().lower()
+    user_text = message.text.strip()
+    user_text_lower = user_text.lower()
     data = await state.get_data()
     original_products = data.get("original_products", [])
     
-    if is_affirmative(user_text):
+    if is_affirmative(user_text_lower):
         for p in original_products:
             product_data = extract_product_data(p)
             user_db.add_meal(message.from_user.id, product_data)
@@ -634,7 +790,7 @@ async def handle_correction(message: types.Message, state: FSMContext):
         profile = user_db.get_profile(message.from_user.id)
         tdee = user_db.calculate_tdee(profile) if profile else None
         
-        response = f"Сохранено!\n\n{format_daily_stats(stats, tdee)}"
+        response = f"✅ Сохранено!\n\n{format_daily_stats(stats, tdee)}"
         
         if not has_profile(message.from_user.id):
             response += "\n\n📝 Если мы познакомимся, то я могу давать больше информации.\nИспользуйте команду /profile для настройки."
@@ -643,11 +799,17 @@ async def handle_correction(message: types.Message, state: FSMContext):
         await state.clear()
         return
     
-    if is_negative(user_text) and not is_correction(user_text):
-        await message.answer("Напишите правильные данные, например:\nборщ 300г\nкефир 200г\nили\nудали яйца")
+    if is_negative(user_text_lower) and not is_correction(user_text_lower):
+        await message.answer(
+            "Напишите правильные данные, например:\n"
+            "борщ 300г\n"
+            "кефир 200г\n"
+            "или\n"
+            "удали яйца"
+        )
         return
     
-    if is_delete_command(user_text):
+    if is_delete_command(user_text_lower):
         words_to_delete = re.findall(r'[\w]+', user_text.replace("удали", "").replace("убрать", "").replace("удалить", ""))
         if words_to_delete:
             to_delete = words_to_delete[0]
@@ -677,7 +839,7 @@ async def handle_correction(message: types.Message, state: FSMContext):
                 carbs = p.get("carbs", 0)
                 lines.append(f"{name} - {weight}г, К {cal:.0f}, Б {prot:.1f}, Ж {fat:.1f}, У {carbs:.1f}")
             
-            result_text = "Обновлено:\n\n" + "\n".join(lines)
+            result_text = "🔄 Обновлено:\n\n" + "\n".join(lines)
             result_text += f"\n\nИТОГО: {total['calories']:.0f} ккал | Б: {total['protein']:.1f}г | Ж: {total['fat']:.1f}г | У: {total['carbs']:.1f}г"
             result_text += "\n\nЗаписываю?"
             
@@ -685,13 +847,22 @@ async def handle_correction(message: types.Message, state: FSMContext):
             await message.answer(result_text)
         return
     
-    if is_correction(user_text):
-        waiting_msg = await message.answer("Пересчитываю...")
+    if user_text.startswith('/'):
+        await state.clear()
+        await handle_message(message, state)
+        return
+    
+    if is_correction(user_text_lower):
+        waiting_msg = await message.answer("🔄 Пересчитываю...")
         result = await food_search.parse_and_calculate(user_text)
         await waiting_msg.delete()
         
         if not result["success"] or not result["data"].get("products"):
-            await message.answer("Не удалось распознать корректировку. Напишите, например:\nборщ 300г\nкефир 200г")
+            await message.answer(
+                "Не удалось распознать корректировку. Напишите, например:\n"
+                "борщ 300г\n"
+                "кефир 200г"
+            )
             return
         
         new_products = result["data"].get("products", [])
@@ -707,7 +878,7 @@ async def handle_correction(message: types.Message, state: FSMContext):
             carbs = p.get("carbs", 0)
             lines.append(f"{name} - {weight}г, К {cal:.0f}, Б {prot:.1f}, Ж {fat:.1f}, У {carbs:.1f}")
         
-        result_text = "Обновлено:\n\n" + "\n".join(lines)
+        result_text = "🔄 Обновлено:\n\n" + "\n".join(lines)
         result_text += f"\n\nИТОГО: {total['calories']:.0f} ккал | Б: {total['protein']:.1f}г | Ж: {total['fat']:.1f}г | У: {total['carbs']:.1f}г"
         result_text += "\n\nЗаписываю?"
         
@@ -715,7 +886,13 @@ async def handle_correction(message: types.Message, state: FSMContext):
         await message.answer(result_text)
         return
     
-    await message.answer("Не понял. Напишите 'да' для сохранения, 'нет' для исправления, или просто правильные данные.")
+    await message.answer(
+        "Не понял. Напишите:\n"
+        "• 'да' — для сохранения\n"
+        "• 'нет' — для исправления\n"
+        "• новые данные, например: борщ 300г, кефир 200г\n"
+        "• 'удали X' — чтобы удалить продукт"
+    )
 
 # ============ ОСНОВНОЙ ОБРАБОТЧИК ============
 

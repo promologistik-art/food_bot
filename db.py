@@ -1,16 +1,17 @@
 import sqlite3
 import os
+import random
+import string
 from datetime import date, datetime, timedelta
 from typing import List, Dict, Any, Optional
-from config import USER_DB_PATH, TRIAL_DAYS, ACTIVITY_LEVELS
+from config import USER_DB_PATH, TRIAL_DAYS, ACTIVITY_LEVELS, REFERRAL_BONUS_DAYS, SUBSCRIPTION_PRICE
 
 class UserDB:
     def __init__(self):
-        # Убеждаемся, что папка для базы существует
         os.makedirs(os.path.dirname(USER_DB_PATH), exist_ok=True)
         self.conn = sqlite3.connect(USER_DB_PATH)
         self.create_tables()
-        print(f"✅ База данных подключена: {USER_DB_PATH}")
+        print(f"База данных подключена: {USER_DB_PATH}")
     
     def create_tables(self):
         cursor = self.conn.cursor()
@@ -75,9 +76,40 @@ class UserDB:
             )
         ''')
         
+        # === НОВЫЕ ТАБЛИЦЫ ДЛЯ РЕФЕРАЛОВ ===
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS referral_links (
+                code TEXT PRIMARY KEY,
+                referrer_id INTEGER,
+                commission_percent INTEGER,
+                bonus_months INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (referrer_id) REFERENCES users (user_id)
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS referrals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                referrer_id INTEGER,
+                referee_id INTEGER,
+                link_code TEXT,
+                is_paid BOOLEAN DEFAULT 0,
+                commission_earned REAL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                paid_at TIMESTAMP,
+                FOREIGN KEY (referrer_id) REFERENCES users (user_id),
+                FOREIGN KEY (referee_id) REFERENCES users (user_id),
+                FOREIGN KEY (link_code) REFERENCES referral_links (code)
+            )
+        ''')
+        
         self.conn.commit()
     
-    def get_or_create_user(self, user_id: int, username: str = None, first_name: str = None) -> tuple:
+    # ============ ОСНОВНЫЕ МЕТОДЫ (без изменений) ============
+    
+    def get_or_create_user(self, user_id: int, username: str = None, first_name: str = None, referral_code: str = None) -> tuple:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         user = cursor.fetchone()
@@ -88,7 +120,40 @@ class UserDB:
                 "INSERT INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
                 (user_id, username, first_name)
             )
-            trial_end = (datetime.now() + timedelta(days=TRIAL_DAYS)).date().isoformat()
+            
+            # Проверяем, есть ли реферальный код
+            extra_days = 0
+            referrer_id = None
+            link_code = None
+            commission_percent = None
+            bonus_months = None
+            
+            if referral_code:
+                # Находим информацию о ссылке
+                cursor.execute(
+                    "SELECT referrer_id, commission_percent, bonus_months FROM referral_links WHERE code = ?",
+                    (referral_code,)
+                )
+                link_info = cursor.fetchone()
+                if link_info:
+                    referrer_id = link_info[0]
+                    commission_percent = link_info[1]
+                    bonus_months = link_info[2]
+                    link_code = referral_code
+                    extra_days = REFERRAL_BONUS_DAYS
+                    
+                    # Сохраняем запись о реферале
+                    cursor.execute('''
+                        INSERT INTO referrals (referrer_id, referee_id, link_code)
+                        VALUES (?, ?, ?)
+                    ''', (referrer_id, user_id, link_code))
+                    
+                    # Добавляем бонусные дни рефереру (бесплатные месяцы)
+                    if bonus_months and bonus_months > 0:
+                        self._add_bonus_months_to_user(referrer_id, bonus_months)
+            
+            # Создаём подписку с бонусными днями
+            trial_end = (datetime.now() + timedelta(days=TRIAL_DAYS + extra_days)).date().isoformat()
             cursor.execute(
                 "INSERT INTO subscriptions (user_id, trial_end) VALUES (?, ?)",
                 (user_id, trial_end)
@@ -98,12 +163,174 @@ class UserDB:
         
         return user, is_new
     
+    def _add_bonus_months_to_user(self, user_id: int, months: int):
+        """Добавляет бонусные месяцы к подписке пользователя"""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT paid_until, trial_end FROM subscriptions WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        
+        if row:
+            paid_until = row[0]
+            trial_end = row[1]
+            
+            # Определяем текущую дату окончания
+            current_end = None
+            if paid_until:
+                current_end = date.fromisoformat(paid_until)
+            elif trial_end:
+                current_end = date.fromisoformat(trial_end)
+            else:
+                current_end = date.today()
+            
+            # Добавляем месяцы
+            new_end = current_end + timedelta(days=months * 30)
+            
+            cursor.execute(
+                "UPDATE subscriptions SET paid_until = ? WHERE user_id = ?",
+                (new_end.isoformat(), user_id)
+            )
+            self.conn.commit()
+    
     def get_user_id_by_username(self, username: str) -> Optional[int]:
         cursor = self.conn.cursor()
         username = username.lstrip('@').lower()
         cursor.execute("SELECT user_id FROM users WHERE LOWER(username) = ?", (username,))
         row = cursor.fetchone()
         return row[0] if row else None
+    
+    def generate_referral_link(self, referrer_id: int, commission_percent: int, bonus_months: int) -> str:
+        """Генерирует уникальную реферальную ссылку"""
+        cursor = self.conn.cursor()
+        
+        # Генерируем уникальный код
+        while True:
+            code = 'ref_' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+            cursor.execute("SELECT code FROM referral_links WHERE code = ?", (code,))
+            if not cursor.fetchone():
+                break
+        
+        cursor.execute('''
+            INSERT INTO referral_links (code, referrer_id, commission_percent, bonus_months)
+            VALUES (?, ?, ?, ?)
+        ''', (code, referrer_id, commission_percent, bonus_months))
+        self.conn.commit()
+        
+        return code
+    
+    def get_referral_stats(self) -> List[Dict]:
+        """Получает статистику по всем рефералам"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT 
+                u.user_id,
+                u.username,
+                u.first_name,
+                COUNT(DISTINCT r.referee_id) as total_refs,
+                SUM(CASE WHEN r.is_paid = 1 THEN 1 ELSE 0 END) as paid_refs,
+                SUM(r.commission_earned) as total_commission,
+                rl.commission_percent,
+                rl.bonus_months
+            FROM referral_links rl
+            LEFT JOIN users u ON rl.referrer_id = u.user_id
+            LEFT JOIN referrals r ON rl.code = r.link_code
+            GROUP BY rl.referrer_id
+            ORDER BY total_refs DESC
+        ''')
+        rows = cursor.fetchall()
+        
+        return [{
+            "user_id": r[0],
+            "username": r[1],
+            "first_name": r[2],
+            "total_refs": r[3] or 0,
+            "paid_refs": r[4] or 0,
+            "total_commission": r[5] or 0,
+            "commission_percent": r[6],
+            "bonus_months": r[7]
+        } for r in rows]
+    
+    def get_referral_link_info(self, code: str) -> Optional[Dict]:
+        """Получает информацию о реферальной ссылке"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT rl.code, rl.referrer_id, rl.commission_percent, rl.bonus_months, rl.created_at,
+                   u.username, u.first_name,
+                   COUNT(r.referee_id) as total_refs,
+                   SUM(CASE WHEN r.is_paid = 1 THEN 1 ELSE 0 END) as paid_refs
+            FROM referral_links rl
+            LEFT JOIN users u ON rl.referrer_id = u.user_id
+            LEFT JOIN referrals r ON rl.code = r.link_code
+            WHERE rl.code = ?
+            GROUP BY rl.code
+        ''', (code,))
+        row = cursor.fetchone()
+        
+        if row:
+            return {
+                "code": row[0],
+                "referrer_id": row[1],
+                "commission_percent": row[2],
+                "bonus_months": row[3],
+                "created_at": row[4],
+                "username": row[5],
+                "first_name": row[6],
+                "total_refs": row[7] or 0,
+                "paid_refs": row[8] or 0
+            }
+        return None
+    
+    def mark_referral_paid(self, referee_id: int, amount: float):
+        """Отмечает, что пользователь оплатил подписку, и начисляет комиссию рефералу"""
+        cursor = self.conn.cursor()
+        
+        # Находим запись о реферале
+        cursor.execute(
+            "SELECT referrer_id, link_code FROM referrals WHERE referee_id = ? AND is_paid = 0",
+            (referee_id,)
+        )
+        row = cursor.fetchone()
+        
+        if row:
+            referrer_id = row[0]
+            link_code = row[1]
+            
+            # Получаем процент комиссии
+            cursor.execute("SELECT commission_percent FROM referral_links WHERE code = ?", (link_code,))
+            link_row = cursor.fetchone()
+            commission_percent = link_row[0] if link_row else 20
+            
+            commission = amount * commission_percent / 100
+            
+            # Обновляем запись
+            cursor.execute('''
+                UPDATE referrals 
+                SET is_paid = 1, commission_earned = ?, paid_at = CURRENT_TIMESTAMP
+                WHERE referee_id = ?
+            ''', (commission, referee_id))
+            self.conn.commit()
+            
+            return referrer_id, commission
+        
+        return None, 0
+    
+    def get_referrer_stats(self, user_id: int) -> Dict:
+        """Получает статистику для конкретного реферала"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT 
+                COUNT(DISTINCT r.referee_id) as total_refs,
+                SUM(CASE WHEN r.is_paid = 1 THEN 1 ELSE 0 END) as paid_refs,
+                SUM(r.commission_earned) as total_commission
+            FROM referrals r
+            WHERE r.referrer_id = ?
+        ''', (user_id,))
+        row = cursor.fetchone()
+        
+        return {
+            "total_refs": row[0] or 0,
+            "paid_refs": row[1] or 0,
+            "total_commission": row[2] or 0
+        }
     
     def get_profile(self, user_id: int) -> Optional[Dict]:
         cursor = self.conn.cursor()
@@ -204,6 +431,9 @@ class UserDB:
             (paid_until, user_id)
         )
         self.conn.commit()
+        
+        # Отмечаем реферала как оплатившего
+        self.mark_referral_paid(user_id, SUBSCRIPTION_PRICE)
     
     def activate_forever_subscription(self, user_id: int):
         cursor = self.conn.cursor()
@@ -212,6 +442,9 @@ class UserDB:
             (user_id,)
         )
         self.conn.commit()
+        
+        # Отмечаем реферала как оплатившего (бессрочная подписка = оплата)
+        self.mark_referral_paid(user_id, SUBSCRIPTION_PRICE)
     
     def extend_subscription(self, user_id: int, days: int):
         cursor = self.conn.cursor()
@@ -229,6 +462,9 @@ class UserDB:
             (new_end.isoformat(), user_id)
         )
         self.conn.commit()
+        
+        # Отмечаем реферала как оплатившего
+        self.mark_referral_paid(user_id, SUBSCRIPTION_PRICE)
     
     def clear_all_user_data(self, user_id: int):
         cursor = self.conn.cursor()
@@ -236,6 +472,8 @@ class UserDB:
         cursor.execute("DELETE FROM daily_stats WHERE user_id = ?", (user_id,))
         cursor.execute("DELETE FROM profiles WHERE user_id = ?", (user_id,))
         cursor.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM referrals WHERE referrer_id = ? OR referee_id = ?", (user_id, user_id))
+        cursor.execute("DELETE FROM referral_links WHERE referrer_id = ?", (user_id,))
         cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
         self.conn.commit()
     
@@ -248,6 +486,7 @@ class UserDB:
         
         stats = self.get_today_stats(user_id)
         sub = self.get_subscription_status(user_id)
+        ref_stats = self.get_referrer_stats(user_id)
         
         return {
             "username": user[0],
@@ -257,7 +496,8 @@ class UserDB:
             "protein": stats["protein"],
             "fat": stats["fat"],
             "carbs": stats["carbs"],
-            "subscription": sub
+            "subscription": sub,
+            "referral_stats": ref_stats
         }
     
     def add_meal(self, user_id: int, product: Dict[str, Any]):
