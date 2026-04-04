@@ -457,7 +457,8 @@ async def cmd_create_referral(message: types.Message):
     
     # Генерируем ссылку
     code = user_db.generate_referral_link(user_id, commission_percent, bonus_months)
-    link = f"https://t.me/{bot.username}?start={code}"
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={code}"
     
     # Получаем информацию о пользователе
     user_info = user_db.get_user_info(user_id)
@@ -529,10 +530,10 @@ async def cmd_ref_link_info(message: types.Message):
         return
     
     username = f"@{info['username']}" if info['username'] else info['first_name']
-    bot_username = (await bot.get_me()).username
+    bot_info = await bot.get_me()
     
     text = f"📋 Информация о реферальной ссылке\n\n"
-    text += f"🔗 Ссылка: https://t.me/{bot_username}?start={code}\n"
+    text += f"🔗 Ссылка: https://t.me/{bot_info.username}?start={code}\n"
     text += f"👤 Реферал: {username}\n"
     text += f"💰 Комиссия: {info['commission_percent']}%\n"
     text += f"🎁 Бонус рефералу: {info['bonus_months']} мес\n"
